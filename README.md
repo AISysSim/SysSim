@@ -2,6 +2,8 @@
 
 **SysSim** that traces neural network execution to build a computational graph and estimate runtime using roofline models and ML-based efficiency prediction.
 
+For in-depth technical architecture, see [DESIGN.md](DESIGN.md) 
+
 ---
 
 ## 🚀 Quick Start
