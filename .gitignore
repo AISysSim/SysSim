@@ -61,6 +61,21 @@ tests/unit/saved_checkpoint/
 
 # virtual env directory for format
 venv
+.venv
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/
+
+# ruff
+.ruff_cache/
+
+# coverage
+htmlcov/
+.coverage
+.coverage.*
 
 ## Trained models and profiling data
 # Trained model files

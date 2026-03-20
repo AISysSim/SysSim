@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 from .config import ExecutionMode, HardwareInfo, SimulatorConfig, NetworkParams, get_hardware_info
 from .operator_graph import OperatorType, OperatorNode, OperatorGraph, TensorMeta
 from .api import trace_model_for_training, trace_model_for_inference, set_efficiency_model_dir
