@@ -191,6 +191,11 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
 
         # AMD MI300
         ("mi300", "mi300", 653.0, 326.5, 5200.0),
+
+        # Tenstorrent Wormhole N300 (per-chip: 64 Tensix cores @ 1 GHz)
+        # BF16 matrix engine 74 TFLOP/s, FP32 SFPU 2 TFLOP/s, 12 GB GDDR6 288 GB/s
+        ("wormhole", "tt_wh_n300", 74.0, 2.0, 288.0),
+        ("n300", "tt_wh_n300", 74.0, 2.0, 288.0),
     ]
 
     # Check device name against known patterns

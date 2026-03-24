@@ -26,6 +26,7 @@ from __future__ import annotations
 import time
 import math
 import random
+import importlib
 from pathlib import Path
 
 import torch
@@ -38,6 +39,7 @@ from .compute_cost_predictor import roofline_estimate, aten
 try:
     import numpy as np
     import pandas as pd
+    import yaml
     from sklearn.model_selection import KFold
     import xgboost as xgb
     import pickle
@@ -279,6 +281,35 @@ COMPUTE_GRIDS = {
 }
 
 
+def _build_tt_grids() -> dict[str, dict]:
+    seed = 42
+    return {
+        "gemm": {
+            "M": _generate_proportional_samples(2, 32768, 64, seed),
+            "N": _generate_proportional_samples(256, 32768, 64, seed + 1),
+            "K": _generate_proportional_samples(256, 16384, 64, seed + 2),
+        },
+        "attn": {
+            "bs": _generate_power_of_two_range(1, 16),
+            "seq": _generate_proportional_samples(1, 32768, 64, seed),
+            "nh": _generate_power_of_two_range(2, 128),
+            "nkv": _generate_power_of_two_range(1, 8),
+            "hd": [64, 128],
+        },
+        "rmsnorm": {
+            "seq": _generate_proportional_samples(2, 32768, 128, seed),
+            "dim": _generate_proportional_samples(128, 16384, 128, seed + 1),
+        },
+        "silu": {
+            "seq": _generate_proportional_samples(2, 32768, 128, seed),
+            "dim": _generate_proportional_samples(768, 32768, 128, seed + 1),
+        },
+    }
+
+
+TT_COMPUTE_GRIDS = _build_tt_grids()
+
+
 def _profile_gemm(m: int, n: int, k: int, num_runs: int = 100) -> float:
     """Profile a single GEMM configuration and return median time in ms."""
     if not torch.cuda.is_available():
@@ -477,6 +508,388 @@ def _profile_silu(seq: int, dim: int, num_runs: int = 100) -> float:
         times.append((end - start) * 1000)
 
     return float(np.median(times))
+
+
+TT_HW_DATABASE: dict[str, tuple[float, float, float, float]] = {
+    "tt_wh_n300": (74.0, 74.0, 2.0, 288.0),
+    "tt_wh_n150": (74.0, 74.0, 2.0, 288.0),
+}
+
+
+_TT_DEVICE = None
+
+
+def _get_tt_device():
+    global _TT_DEVICE
+    if _TT_DEVICE is None:
+        ttnn = importlib.import_module("ttnn")
+        _TT_DEVICE = ttnn.open_device(device_id=0)
+    return _TT_DEVICE
+
+
+def _close_tt_device():
+    global _TT_DEVICE
+    if _TT_DEVICE is not None:
+        ttnn = importlib.import_module("ttnn")
+        ttnn.close_device(_TT_DEVICE)
+        _TT_DEVICE = None
+
+
+def _auto_detect_tt_platform() -> str:
+    try:
+        device = _get_tt_device()
+        arch = str(device).lower()
+        if "n300" in arch or "wormhole" in arch:
+            return "tt_wh_n300"
+        if "n150" in arch:
+            return "tt_wh_n150"
+    except Exception:
+        pass
+    print("  Warning: could not auto-detect TT platform, defaulting to tt_wh_n300")
+    return "tt_wh_n300"
+
+
+def _profile_gemm_tt(m: int, n: int, k: int, num_runs: int = 100) -> float:
+    try:
+        import torch
+        ttnn = importlib.import_module("ttnn")
+
+        device = _get_tt_device()
+
+        a = ttnn.from_torch(
+            torch.randn(m, k, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+        b = ttnn.from_torch(
+            torch.randn(k, n, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+
+        for _ in range(5):
+            c = ttnn.matmul(a, b)
+            ttnn.deallocate(c)
+        ttnn.synchronize_device(device)
+
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            c = ttnn.matmul(a, b)
+            ttnn.synchronize_device(device)
+            end = time.perf_counter()
+            ttnn.deallocate(c)
+            times.append((end - start) * 1000)
+
+        ttnn.deallocate(a)
+        ttnn.deallocate(b)
+        return float(np.median(times))
+
+    except (RuntimeError, MemoryError, Exception) as e:
+        if "Out of Memory" in str(e) or "OOM" in str(e):
+            return -1.0
+        raise
+
+
+def _profile_attention_tt(
+    batch: int,
+    num_heads: int,
+    seq_len: int,
+    head_dim: int,
+    num_kv_heads: int | None = None,
+    num_runs: int = 100,
+) -> float:
+    if num_kv_heads is None:
+        num_kv_heads = num_heads
+
+    try:
+        import torch
+        ttnn = importlib.import_module("ttnn")
+
+        device = _get_tt_device()
+
+        q = ttnn.from_torch(
+            torch.randn(batch, num_heads, seq_len, head_dim, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+        k = ttnn.from_torch(
+            torch.randn(batch, num_kv_heads, seq_len, head_dim, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+        v = ttnn.from_torch(
+            torch.randn(batch, num_kv_heads, seq_len, head_dim, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+
+        use_native_sdpa = True
+        try:
+            out = ttnn.transformer.scaled_dot_product_attention(q, k, v, is_causal=False)
+            ttnn.synchronize_device(device)
+            ttnn.deallocate(out)
+        except Exception:
+            use_native_sdpa = False
+
+        def _run_attn():
+            if use_native_sdpa:
+                return ttnn.transformer.scaled_dot_product_attention(q, k, v, is_causal=False)
+            scale = head_dim ** -0.5
+            if num_kv_heads != num_heads:
+                k_expanded = ttnn.repeat_interleave(k, num_heads // num_kv_heads, dim=1)
+                v_expanded = ttnn.repeat_interleave(v, num_heads // num_kv_heads, dim=1)
+            else:
+                k_expanded = k
+                v_expanded = v
+            scores = ttnn.matmul(q, ttnn.transpose(k_expanded, -2, -1))
+            scores = ttnn.multiply(scores, scale)
+            attn_weights = ttnn.softmax(scores, dim=-1)
+            return ttnn.matmul(attn_weights, v_expanded)
+
+        for _ in range(5):
+            out = _run_attn()
+            ttnn.synchronize_device(device)
+            ttnn.deallocate(out)
+
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            out = _run_attn()
+            ttnn.synchronize_device(device)
+            end = time.perf_counter()
+            ttnn.deallocate(out)
+            times.append((end - start) * 1000)
+
+        ttnn.deallocate(q)
+        ttnn.deallocate(k)
+        ttnn.deallocate(v)
+        return float(np.median(times))
+
+    except (RuntimeError, MemoryError, Exception) as e:
+        if "Out of Memory" in str(e) or "OOM" in str(e):
+            return -1.0
+        raise
+
+
+def _profile_rmsnorm_tt(seq: int, dim: int, num_runs: int = 100) -> float:
+    try:
+        import torch
+        ttnn = importlib.import_module("ttnn")
+
+        device = _get_tt_device()
+
+        x = ttnn.from_torch(
+            torch.randn(1, 1, seq, dim, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+        w = ttnn.from_torch(
+            torch.ones(dim, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+
+        for _ in range(5):
+            out = ttnn.rms_norm(x, weight=w)
+            ttnn.deallocate(out)
+        ttnn.synchronize_device(device)
+
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            out = ttnn.rms_norm(x, weight=w)
+            ttnn.synchronize_device(device)
+            end = time.perf_counter()
+            ttnn.deallocate(out)
+            times.append((end - start) * 1000)
+
+        ttnn.deallocate(x)
+        ttnn.deallocate(w)
+        return float(np.median(times))
+
+    except (RuntimeError, MemoryError, Exception) as e:
+        if "Out of Memory" in str(e) or "OOM" in str(e):
+            return -1.0
+        raise
+
+
+def _profile_silu_tt(seq: int, dim: int, num_runs: int = 100) -> float:
+    try:
+        import torch
+        ttnn = importlib.import_module("ttnn")
+
+        device = _get_tt_device()
+
+        x = ttnn.from_torch(
+            torch.randn(1, 1, seq, dim, dtype=torch.float32),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+
+        for _ in range(5):
+            out = ttnn.silu(x)
+            ttnn.deallocate(out)
+        ttnn.synchronize_device(device)
+
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            out = ttnn.silu(x)
+            ttnn.synchronize_device(device)
+            end = time.perf_counter()
+            ttnn.deallocate(out)
+            times.append((end - start) * 1000)
+
+        ttnn.deallocate(x)
+        return float(np.median(times))
+
+    except (RuntimeError, MemoryError, Exception) as e:
+        if "Out of Memory" in str(e) or "OOM" in str(e):
+            return -1.0
+        raise
+
+
+_CSV_COLUMNS = {
+    "gemm": ["M", "N", "K", "t_measured_ms"],
+    "attn": ["bs", "seq", "nh", "nkv", "hd", "t_measured_ms"],
+    "rmsnorm": ["seq", "dim", "t_measured_ms"],
+    "silu": ["seq", "dim", "t_measured_ms"],
+}
+
+
+def _load_completed(csv_path: Path, key_columns: list[str]) -> set[tuple]:
+    if not csv_path.exists():
+        return set()
+    try:
+        df = pd.read_csv(csv_path)
+        return {tuple(row[c] for c in key_columns) for _, row in df.iterrows()}
+    except Exception:
+        return set()
+
+
+def _append_row(csv_path: Path, row: dict, columns: list[str]) -> None:
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+    with open(csv_path, "a") as f:
+        if write_header:
+            f.write(",".join(columns) + "\n")
+        f.write(",".join(str(row[c]) for c in columns) + "\n")
+
+
+def _profile_gemm_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
+    columns = _CSV_COLUMNS["gemm"]
+    key_cols = ["M", "N", "K"]
+    done = _load_completed(csv_path, key_cols)
+    total = len(grid["M"]) * len(grid["N"]) * len(grid["K"])
+    count, skipped = 0, 0
+    for m in grid["M"]:
+        for n in grid["N"]:
+            for k in grid["K"]:
+                count += 1
+                if (m, n, k) in done:
+                    skipped += 1
+                    continue
+                if (count - skipped) % 100 == 0 or count == 1:
+                    print(f"  [{count}/{total}] M={m}, N={n}, K={k}  (skipped {skipped})")
+                try:
+                    t = _profile_gemm_tt(m, n, k, num_runs)
+                except (RuntimeError, MemoryError):
+                    t = -1.0
+                row = {"M": m, "N": n, "K": k, "t_measured_ms": t}
+                _append_row(csv_path, row, columns)
+    return total
+
+
+def _profile_attn_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
+    columns = _CSV_COLUMNS["attn"]
+    key_cols = ["bs", "seq", "nh", "nkv", "hd"]
+    done = _load_completed(csv_path, key_cols)
+    total = (len(grid["bs"]) * len(grid["seq"]) * len(grid["nh"])
+             * len(grid["nkv"]) * len(grid["hd"]))
+    count, skipped = 0, 0
+    for bs in grid["bs"]:
+        for seq in grid["seq"]:
+            for nh in grid["nh"]:
+                for nkv in grid["nkv"]:
+                    for hd in grid["hd"]:
+                        count += 1
+                        if (bs, seq, nh, nkv, hd) in done:
+                            skipped += 1
+                            continue
+                        if (count - skipped) % 100 == 0 or count == 1:
+                            print(f"  [{count}/{total}] bs={bs}, seq={seq}, "
+                                  f"nh={nh}, nkv={nkv}, hd={hd}  (skipped {skipped})")
+                        try:
+                            t = _profile_attention_tt(
+                                batch=bs, num_heads=nh, seq_len=seq,
+                                head_dim=hd, num_kv_heads=nkv, num_runs=num_runs)
+                        except (RuntimeError, MemoryError):
+                            t = -1.0
+                        row = {"bs": bs, "seq": seq, "nh": nh,
+                               "nkv": nkv, "hd": hd, "t_measured_ms": t}
+                        _append_row(csv_path, row, columns)
+    return total
+
+
+def _profile_rmsnorm_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
+    columns = _CSV_COLUMNS["rmsnorm"]
+    key_cols = ["seq", "dim"]
+    done = _load_completed(csv_path, key_cols)
+    total = len(grid["seq"]) * len(grid["dim"])
+    count, skipped = 0, 0
+    for seq in grid["seq"]:
+        for dim in grid["dim"]:
+            count += 1
+            if (seq, dim) in done:
+                skipped += 1
+                continue
+            if (count - skipped) % 100 == 0 or count == 1:
+                print(f"  [{count}/{total}] seq={seq}, dim={dim}  (skipped {skipped})")
+            try:
+                t = _profile_rmsnorm_tt(seq, dim, num_runs)
+            except (RuntimeError, MemoryError):
+                t = -1.0
+            row = {"seq": seq, "dim": dim, "t_measured_ms": t}
+            _append_row(csv_path, row, columns)
+    return total
+
+
+def _profile_silu_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
+    columns = _CSV_COLUMNS["silu"]
+    key_cols = ["seq", "dim"]
+    done = _load_completed(csv_path, key_cols)
+    total = len(grid["seq"]) * len(grid["dim"])
+    count, skipped = 0, 0
+    for seq in grid["seq"]:
+        for dim in grid["dim"]:
+            count += 1
+            if (seq, dim) in done:
+                skipped += 1
+                continue
+            if (count - skipped) % 100 == 0 or count == 1:
+                print(f"  [{count}/{total}] seq={seq}, dim={dim}  (skipped {skipped})")
+            try:
+                t = _profile_silu_tt(seq, dim, num_runs)
+            except (RuntimeError, MemoryError):
+                t = -1.0
+            row = {"seq": seq, "dim": dim, "t_measured_ms": t}
+            _append_row(csv_path, row, columns)
+    return total
+
+
+def _update_manifest(
+    manifest_path: Path,
+    hw_name: str,
+    operator: str,
+    csv_path: Path,
+    base_dir: Path,
+) -> None:
+    manifest: dict = {}
+    if manifest_path.exists():
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text()) or {}
+        except Exception:
+            manifest = {}
+
+    if hw_name not in manifest:
+        manifest[hw_name] = {}
+
+    rel_path = str(csv_path.relative_to(base_dir))
+    manifest[hw_name][operator] = rel_path
+
+    manifest_path.write_text(yaml.dump(manifest, default_flow_style=False, sort_keys=True))
 
 
 def _profile_gemm_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list[dict]:
@@ -1316,6 +1729,8 @@ def profile_operator(
     output_dir: str,
     num_runs: int = 100,
     checkpoint_interval: int = 1000,
+    platform: str = "cuda",
+    csv_output_dir: str | None = None,
 ) -> Path:
     """Profile operator and save clean data with checkpointing support.
 
@@ -1334,22 +1749,42 @@ def profile_operator(
     """
     if not HAS_TRAINING_DEPS:
         raise ImportError("Install numpy and pandas for profiling")
-    if not torch.cuda.is_available():
+    if platform == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA required for profiling")
 
     print(f"=" * 80)
     print(f"PROFILING MODE: {operator.upper()}")
     print(f"=" * 80)
 
-    # Auto-detect hardware
-    hw_info, hw_name = get_hardware_info()
+    is_tt = platform.startswith("tt_") or platform == "auto_tt"
+    if is_tt:
+        if platform == "auto_tt":
+            platform = _auto_detect_tt_platform()
+        if platform not in TT_HW_DATABASE:
+            available = ", ".join(sorted(TT_HW_DATABASE.keys()))
+            raise ValueError(f"Unknown TT platform: {platform}. Available: {available}")
+        mm, mm_cons, math_t, bw = TT_HW_DATABASE[platform]
+        hw_info = HardwareInfo(
+            peak_tflops_mm=mm,
+            peak_tflops_mm_conservative=mm_cons,
+            peak_tflops_math=math_t,
+            peak_memory_bandwidth_gbps=bw,
+        )
+        hw_name = platform
+    else:
+        hw_info, hw_name = get_hardware_info()
     print(f"\nDetected hardware: {hw_name}")
     print(f"  Peak TFLOP/s (MM):   {hw_info.peak_tflops_mm:.1f}")
     print(f"  Peak TFLOP/s (Math): {hw_info.peak_tflops_math:.1f}")
     print(f"  Peak Bandwidth:      {hw_info.peak_memory_bandwidth_gbps:.1f} GB/s")
 
+    base_csv_dir = csv_output_dir if csv_output_dir is not None else output_dir
+    csv_base_path = Path(base_csv_dir)
+    csv_base_path.mkdir(parents=True, exist_ok=True)
+    csv_path = csv_base_path / f"{operator}_{hw_name}_data.csv"
+
     # Get profiling grid
-    grid = COMPUTE_GRIDS[operator]
+    grid = TT_COMPUTE_GRIDS[operator] if is_tt else COMPUTE_GRIDS[operator]
     print(f"\nProfiling {operator} operator...")
 
     # Calculate total configurations
@@ -1368,29 +1803,43 @@ def profile_operator(
     print(f"  Checkpoint interval: every {checkpoint_interval} configs")
 
     # Profile operator grid (clean data only)
-    if operator == "gemm":
-        results = _profile_gemm_grid(hw_info, grid, num_runs)
-    elif operator == "attn":
-        results = _profile_attn_grid(hw_info, grid, num_runs)
-    elif operator == "rmsnorm":
-        results = _profile_rmsnorm_grid(hw_info, grid, num_runs)
-    elif operator == "silu":
-        results = _profile_silu_grid(hw_info, grid, num_runs)
-    elif operator == "math":
-        results = _profile_math_grid(hw_info, grid, num_runs)
+    if is_tt:
+        manifest_path = csv_base_path / "profiling_manifest.yaml"
+        _update_manifest(manifest_path, hw_name, operator, csv_path, csv_base_path)
+        try:
+            if operator == "gemm":
+                _profile_gemm_grid_tt(grid, num_runs, csv_path)
+            elif operator == "attn":
+                _profile_attn_grid_tt(grid, num_runs, csv_path)
+            elif operator == "rmsnorm":
+                _profile_rmsnorm_grid_tt(grid, num_runs, csv_path)
+            elif operator == "silu":
+                _profile_silu_grid_tt(grid, num_runs, csv_path)
+            else:
+                raise ValueError(f"Unknown operator: {operator}")
+        finally:
+            _close_tt_device()
+        df = pd.read_csv(csv_path)
     else:
-        raise ValueError(f"Unknown operator: {operator}")
-
-    # Save clean data (model-agnostic)
-    df = pd.DataFrame(results)
-    csv_path = Path(output_dir) / f"{operator}_{hw_name}_data.csv"
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(csv_path, index=False)
+        if operator == "gemm":
+            results = _profile_gemm_grid(hw_info, grid, num_runs)
+        elif operator == "attn":
+            results = _profile_attn_grid(hw_info, grid, num_runs)
+        elif operator == "rmsnorm":
+            results = _profile_rmsnorm_grid(hw_info, grid, num_runs)
+        elif operator == "silu":
+            results = _profile_silu_grid(hw_info, grid, num_runs)
+        elif operator == "math":
+            results = _profile_math_grid(hw_info, grid, num_runs)
+        else:
+            raise ValueError(f"Unknown operator: {operator}")
+        df = pd.DataFrame(results)
+        df.to_csv(csv_path, index=False)
 
     print(f"\n" + "=" * 80)
     print(f"✅ PROFILING COMPLETE")
     print(f"=" * 80)
-    print(f"Profiled configurations: {len(results)}")
+    print(f"Profiled configurations: {len(df)}")
     print(f"Saved clean data to: {csv_path}")
     print(f"Columns: {list(df.columns)}")
     print(f"\nTo train models, run:")
@@ -1605,16 +2054,28 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Profile operators and train efficiency models (MLP or XGBoost)"
     )
+    ALL_OPERATORS = ["gemm", "attn", "rmsnorm", "silu", "math"]
     parser.add_argument(
         "--operator",
         required=True,
-        choices=["gemm", "attn", "rmsnorm", "silu", "math"],
-        help="Operator type to profile and train"
+        choices=ALL_OPERATORS + ["all"],
+        help="Operator type to profile and train ('all' for profiling mode only)"
     )
     parser.add_argument(
-        "--output",
-        required=True,
-        help="Output path for trained model (.pth file). CSV data will be saved as {name}_data.csv"
+        "--output", default=None,
+        help="Output path for a single trained model (.pth). Auto-derived from --output-dir if not set.",
+    )
+    parser.add_argument(
+        "--output-dir", default=None,
+        help="Base directory for models and CSVs. Model: {dir}/{op}_{hw}_{backend}.pth, CSV: {dir}/{op}_{hw}_data.csv",
+    )
+    parser.add_argument(
+        "--platform", default="cuda",
+        help="Profiling platform: cuda (default), or TT platform name (tt_wh_n300, tt_wh_n150, auto_tt)",
+    )
+    parser.add_argument(
+        "--csv-output-dir", default=None,
+        help="Directory for CSV profiling data. Defaults to --output-dir",
     )
     parser.add_argument(
         "--backend",
@@ -1649,46 +2110,91 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    is_tt = args.platform.startswith("tt_") or args.platform == "auto_tt"
+
+    # --- Resolve output_dir from --output-dir or --output ---
+    if args.output_dir is not None:
+        output_dir = args.output_dir
+    elif args.output is not None:
+        output_dir = str(Path(args.output).parent)
+    elif is_tt:
+        output_dir = None
+    else:
+        parser.error("Provide at least one of --output-dir or --output")
+
+    csv_output_dir = args.csv_output_dir if args.csv_output_dir is not None else output_dir
+
+    # --- Operator list ---
+    if args.operator == "all" and args.data_path is not None:
+        parser.error("--operator all is only supported in profiling mode (without --data-path)")
+
+    operators = ALL_OPERATORS if args.operator == "all" else [args.operator]
+
+    # === TT MODE ===
+    if is_tt:
+        if args.output is not None or (args.output_dir is not None and args.csv_output_dir is None):
+            print("WARNING: TT mode — --output and --output-dir are ineffective. "
+                  "Only --csv-output-dir is used for profiling data.")
+        if csv_output_dir is None:
+            parser.error("TT mode requires --csv-output-dir (or --output-dir as fallback)")
+        if args.operator == "math":
+            parser.error("TT mode does not support --operator math")
+        if args.operator == "all":
+            operators = [op for op in operators if op != "math"]
+
+        print("\n" + "=" * 80)
+        print("MODE: TT PROFILING")
+        print("=" * 80)
+        for op in operators:
+            profile_operator(
+                operator=op,
+                output_dir=csv_output_dir,
+                num_runs=args.num_runs,
+                checkpoint_interval=args.checkpoint_interval,
+                platform=args.platform,
+                csv_output_dir=csv_output_dir,
+            )
+        raise SystemExit(0)
+
+    # === CUDA PROFILING MODE ===
     if args.data_path is None:
-        # PROFILING MODE: No data provided, must profile first
         print("\n" + "=" * 80)
         print("MODE: PROFILING (no --data-path provided)")
         print("=" * 80)
 
-        output_dir = str(Path(args.output).parent)
+        for op in operators:
+            profile_operator(
+                operator=op,
+                output_dir=output_dir,
+                num_runs=args.num_runs,
+                checkpoint_interval=args.checkpoint_interval,
+                platform=args.platform,
+                csv_output_dir=csv_output_dir,
+            )
 
-        csv_path = profile_operator(
-            operator=args.operator,
-            output_dir=output_dir,
-            num_runs=args.num_runs,
-            checkpoint_interval=args.checkpoint_interval,
-        )
-
+    # === CUDA TRAINING MODE ===
     else:
-        # TRAINING MODE: Data path provided, load and train
+        if args.operator == "all":
+            parser.error("--operator all is not supported in training mode")
+
         print("\n" + "=" * 80)
         print("MODE: TRAINING (using --data-path)")
         print("=" * 80)
 
         csv_path = Path(args.data_path)
-
-        # Validate output path
         _, hw_name = get_hardware_info()
-        output_path = Path(args.output)
         backend_suffix = "xgb" if args.backend == "xgboost" else "mlp"
-        expected_filename = f"{args.operator}_{hw_name}_{backend_suffix}.pth"
 
-        if output_path.name != expected_filename:
-            print(f"\nWARNING: Output filename doesn't match expected pattern!")
-            print(f"  Detected hardware: {hw_name}")
-            print(f"  Provided: {output_path.name}")
-            print(f"  Expected: {expected_filename}")
-            print(f"  (Will continue anyway...)\n")
+        if args.output is not None:
+            output_path = args.output
+        else:
+            output_path = str(Path(output_dir) / f"{args.operator}_{hw_name}_{backend_suffix}.pth")
+            print(f"  Auto-derived model path: {output_path}")
 
         train_efficiency_model(
-            operator=args.operator,
+            operator=operators[0],
             csv_path=csv_path,
-            output_path=args.output,
+            output_path=output_path,
             backend=args.backend,
             epochs=args.epochs,
         )
