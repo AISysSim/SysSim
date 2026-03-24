@@ -37,6 +37,23 @@ import pandas as pd
 
 
 # ==============================================================================
+# Unit Conversion Constants (mirrors compute_cost_predictor.py)
+# ==============================================================================
+
+TFLOPS_TO_FLOPS = 1e12   # 1 TFLOP/s = 10^12 FLOP/s
+GBPS_TO_BPS = 1e9         # 1 GB/s   = 10^9 bytes/s
+
+# Matches compute_cost_predictor._PYTORCH_MIN_ALLOCATE (CUDA caching allocator
+# rounds every allocation up to this boundary).
+_PYTORCH_MIN_ALLOCATE = 512
+
+# Matches compute_cost_predictor.LARGE_GEMM_THRESHOLD — operations with all
+# dimensions >= this value use the full tensor-unit peak; smaller ones use
+# the conservative peak to account for kernel launch overhead.
+LARGE_GEMM_THRESHOLD = 512
+
+
+# ==============================================================================
 # Hardware Info (manually specified for target platform)
 # ==============================================================================
 
@@ -44,6 +61,7 @@ import pandas as pd
 
 PLATFORM_HW_NAME = "unknown"
 PEAK_TFLOPS_MM = 0.0
+PEAK_TFLOPS_MM_CONSERVATIVE = 0.0  # For small ops (any dim < 512). Set to PEAK_TFLOPS_MM if unknown.
 PEAK_TFLOPS_MATH = 0.0
 PEAK_MEMORY_BANDWIDTH_GBPS = 0.0
 
@@ -102,6 +120,145 @@ def _generate_power_of_two_range(start: int, end: int) -> list[int]:
     first_exp = math.ceil(math.log2(max(1, start)))
     last_exp = math.floor(math.log2(end))
     return [2 ** e for e in range(first_exp, last_exp + 1) if start <= 2 ** e <= end]
+
+
+# ==============================================================================
+# Roofline Computation (pure arithmetic, no torch/CUDA dependency)
+# ==============================================================================
+
+def _aligned_tensor_bytes(numel: int, dtype_bytes: int = 2) -> int:
+    """Return byte count for a single tensor, rounded up to the CUDA caching
+    allocator boundary (512 bytes).  Matches compute_cost_predictor.get_num_bytes.
+    """
+    raw = numel * dtype_bytes
+    return math.ceil(raw / _PYTORCH_MIN_ALLOCATE) * _PYTORCH_MIN_ALLOCATE
+
+
+def _roofline_gemm(m: int, n: int, k: int, dtype_bytes: int = 2) -> float:
+    """Roofline T (ms) for GEMM C[m,n] = A[m,k] @ B[k,n].
+
+    Matches the original's path through roofline_estimate → get_roofline_compute_time
+    + get_roofline_transfer_time (with per-tensor 512-byte alignment and two-tier
+    peak selection).
+    """
+    # --- compute constraint (matches flop_counter.mm_flop) ---
+    flops = 2 * m * n * k
+    is_large = (m >= LARGE_GEMM_THRESHOLD
+                and n >= LARGE_GEMM_THRESHOLD
+                and k >= LARGE_GEMM_THRESHOLD)
+    peak = PEAK_TFLOPS_MM if is_large else (PEAK_TFLOPS_MM_CONSERVATIVE or PEAK_TFLOPS_MM)
+    compute_ns = (flops / (peak * TFLOPS_TO_FLOPS)) * 1e9
+
+    # --- memory constraint (per-tensor alignment, then sum) ---
+    bytes_a = _aligned_tensor_bytes(m * k, dtype_bytes)
+    bytes_b = _aligned_tensor_bytes(k * n, dtype_bytes)
+    bytes_c = _aligned_tensor_bytes(m * n, dtype_bytes)
+    transfer_ns = (bytes_a + bytes_b + bytes_c) / PEAK_MEMORY_BANDWIDTH_GBPS
+
+    return max(compute_ns, transfer_ns) / 1e6  # ns → ms
+
+
+def _roofline_attn(
+    bs: int, nh: int, seq: int, hd: int, nkv: int,
+    dtype_bytes: int = 2,
+) -> float:
+    """Roofline T (ms) for scaled dot-product attention (MHA / GQA).
+
+    FLOPs = 4 * bs * nh * seq² * hd  (matches flop_counter.sdpa_flop_count).
+    Bytes: Q[bs,nh,seq,hd] + K[bs,nkv,seq,hd] + V[bs,nkv,seq,hd]
+           + Out[bs,nh,seq,hd], each aligned to 512.
+    """
+    # --- compute constraint ---
+    flops = 4 * bs * nh * seq * seq * hd
+    is_large = (bs * nh * seq >= 4096 and seq >= LARGE_GEMM_THRESHOLD)
+    peak = PEAK_TFLOPS_MM if is_large else (PEAK_TFLOPS_MM_CONSERVATIVE or PEAK_TFLOPS_MM)
+    compute_ns = (flops / (peak * TFLOPS_TO_FLOPS)) * 1e9
+
+    # --- memory constraint (per-tensor alignment) ---
+    bytes_q   = _aligned_tensor_bytes(bs * nh  * seq * hd, dtype_bytes)
+    bytes_k   = _aligned_tensor_bytes(bs * nkv * seq * hd, dtype_bytes)
+    bytes_v   = _aligned_tensor_bytes(bs * nkv * seq * hd, dtype_bytes)
+    bytes_out = _aligned_tensor_bytes(bs * nh  * seq * hd, dtype_bytes)
+    transfer_ns = (bytes_q + bytes_k + bytes_v + bytes_out) / PEAK_MEMORY_BANDWIDTH_GBPS
+
+    return max(compute_ns, transfer_ns) / 1e6  # ns → ms
+
+
+def _roofline_rmsnorm(seq: int, dim: int) -> float:
+    """Roofline T (ms) for RMSNorm.  Mirrors the original's inline formula:
+    FLOPs ≈ 6 * seq * dim;  Bytes = seq * dim * 2 * 3 (input, output, weight).
+    """
+    flops = 6 * seq * dim
+    bytes_transferred = seq * dim * 2 * 3
+
+    peak_flop_s = PEAK_TFLOPS_MATH * TFLOPS_TO_FLOPS
+    t_compute_ms = (flops / peak_flop_s) * 1000
+
+    peak_bw_bs = PEAK_MEMORY_BANDWIDTH_GBPS * GBPS_TO_BPS
+    t_memory_ms = (bytes_transferred / peak_bw_bs) * 1000
+
+    return max(t_compute_ms, t_memory_ms)
+
+
+def _roofline_silu(seq: int, dim: int) -> float:
+    """Roofline T (ms) for SiLU.  Mirrors the original's inline formula:
+    FLOPs ≈ 8 * seq * dim;  Bytes = seq * dim * 2 * 2 (input, output).
+    """
+    flops = 8 * seq * dim
+    bytes_transferred = seq * dim * 2 * 2
+
+    peak_flop_s = PEAK_TFLOPS_MATH * TFLOPS_TO_FLOPS
+    t_compute_ms = (flops / peak_flop_s) * 1000
+
+    peak_bw_bs = PEAK_MEMORY_BANDWIDTH_GBPS * GBPS_TO_BPS
+    t_memory_ms = (bytes_transferred / peak_bw_bs) * 1000
+
+    return max(t_compute_ms, t_memory_ms)
+
+
+def _add_roofline_and_efficiency(
+    df: pd.DataFrame, operator: str,
+) -> pd.DataFrame:
+    """Add t_roofline_ms and efficiency columns — same output as the original
+    compute_cost_profiler._add_roofline_and_efficiency.
+    """
+    roofline_data: list[dict] = []
+
+    for _, row in df.iterrows():
+        if operator == "gemm":
+            t_roofline_ms = _roofline_gemm(
+                int(row["M"]), int(row["N"]), int(row["K"]),
+            )
+        elif operator == "attn":
+            t_roofline_ms = _roofline_attn(
+                int(row["bs"]), int(row["nh"]), int(row["seq"]),
+                int(row["hd"]), int(row["nkv"]),
+            )
+        elif operator == "rmsnorm":
+            t_roofline_ms = _roofline_rmsnorm(int(row["seq"]), int(row["dim"]))
+        elif operator == "silu":
+            t_roofline_ms = _roofline_silu(int(row["seq"]), int(row["dim"]))
+        else:
+            raise ValueError(f"Unknown operator: {operator}")
+
+        t_measured_ms = row["t_measured_ms"]
+        efficiency = t_roofline_ms / t_measured_ms if t_measured_ms > 0 else 0
+
+        roofline_data.append({
+            "t_roofline_ms": t_roofline_ms,
+            "efficiency": efficiency,
+        })
+
+    df_with_roofline = df.copy()
+    roofline_df = pd.DataFrame(roofline_data)
+    df_with_roofline["t_roofline_ms"] = roofline_df["t_roofline_ms"].values
+    df_with_roofline["efficiency"] = roofline_df["efficiency"].values
+
+    print(f"Roofline computation complete ({len(df)} configs)")
+    print(f"Efficiency: mean={df_with_roofline['efficiency'].mean():.3f}, "
+          f"std={df_with_roofline['efficiency'].std():.3f}")
+
+    return df_with_roofline
 
 
 # ==============================================================================
@@ -370,7 +527,8 @@ def profile_operator(operator: str, output_dir: str, num_runs: int = 100) -> Pat
     if PLATFORM_HW_NAME == "unknown":
         raise RuntimeError(
             "Hardware not configured. Set PLATFORM_HW_NAME, PEAK_TFLOPS_MM, "
-            "PEAK_TFLOPS_MATH, PEAK_MEMORY_BANDWIDTH_GBPS at the top of this script."
+            "PEAK_TFLOPS_MM_CONSERVATIVE, PEAK_TFLOPS_MATH, "
+            "PEAK_MEMORY_BANDWIDTH_GBPS at the top of this script."
         )
     if operator not in _GRID_DISPATCH:
         raise ValueError(f"Unknown operator: {operator}. Choose from {list(_GRID_DISPATCH)}")
@@ -395,6 +553,10 @@ def profile_operator(operator: str, output_dir: str, num_runs: int = 100) -> Pat
     results = _GRID_DISPATCH[operator](grid, num_runs)
 
     df = pd.DataFrame(results)
+
+    print("\nComputing roofline estimates...")
+    df = _add_roofline_and_efficiency(df, operator)
+
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     csv_path = out_path / f"{operator}_{PLATFORM_HW_NAME}_data.csv"
@@ -407,6 +569,7 @@ def profile_operator(operator: str, output_dir: str, num_runs: int = 100) -> Pat
     print("=" * 70)
     print(f"  Saved to: {csv_path}")
     print(f"  Total: {len(df)}  Valid: {n_valid}  Failed: {n_failed}")
+    print(f"  Columns: {list(df.columns)}")
     print("=" * 70)
 
     warnings.warn(
