@@ -8,7 +8,7 @@
 
 **Key use cases:**
 - Simulate model performance on hardware you don't have access to
-- Predict training/inference time before allocating resources
+- Predict training time before allocating resources
 - Evaluate multi-stream execution and distributed training strategies
 - Optimize model architecture for target accelerators
 
@@ -48,7 +48,7 @@ pip install -e ".[all]"            # everything
 ### Basic Usage
 
 ```python
-from syssim import trace_model_for_inference, HardwareInfo, SimulatorConfig
+from syssim import trace_model_for_training, HardwareInfo, SimulatorConfig
 import torch.nn as nn
 import torch
 
@@ -63,7 +63,7 @@ config = SimulatorConfig(hw_info=hw)
 
 # Model and inputs can be on CPU or meta device — tracer converts to fake CUDA internally
 model = nn.Sequential(nn.Linear(128, 64), nn.ReLU())
-graph = trace_model_for_inference(model, torch.randn(32, 128), config)
+graph = trace_model_for_training(model, torch.randn(32, 128), config)
 
 # Analyze
 print(graph.summary())
