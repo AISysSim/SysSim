@@ -510,9 +510,25 @@ def _profile_silu(seq: int, dim: int, num_runs: int = 100) -> float:
     return float(np.median(times))
 
 
+# Per-chip peak specs: (peak_tflops_mm, peak_tflops_mm_conservative,
+#                       peak_tflops_math, peak_memory_bandwidth_gbps)
+#
+# Wormhole (Tensix gen WH, 1 GHz):
+#   N300/N150: 64 Tensix, 12 GB GDDR6 @ 288 GB/s, BF16 MM 74 TFLOP/s, FP32 SFPU 2 TFLOP/s
+#
+# Blackhole (Tensix gen BH, 1.35 GHz, sourced from Tenstorrent product pages):
+#   p150a/p150b: 140 Tensix, 32 GB GDDR6 @ 512 GB/s, BF16 MM 387 TFLOP/s,
+#                Bfp8 MM 774 TFLOP/s, FP32 SFPU ~16 TFLOP/s
+#   p100a:       120 Tensix, 28 GB GDDR6 @ 224 GB/s, BF16 MM 332 TFLOP/s,
+#                Bfp8 MM 664 TFLOP/s, FP32 SFPU ~14 TFLOP/s
+# Roofline uses BF16 MM peak because the profiling helpers below upload tensors
+# as bfloat16; refine via measurement before locking in.
 TT_HW_DATABASE: dict[str, tuple[float, float, float, float]] = {
-    "tt_wh_n300": (74.0, 74.0, 2.0, 288.0),
-    "tt_wh_n150": (74.0, 74.0, 2.0, 288.0),
+    "tt_wh_n300":  (74.0,  74.0,  2.0,  288.0),
+    "tt_wh_n150":  (74.0,  74.0,  2.0,  288.0),
+    "tt_bh_p150b": (387.0, 387.0, 16.0, 512.0),
+    "tt_bh_p150a": (387.0, 387.0, 16.0, 512.0),
+    "tt_bh_p100a": (332.0, 332.0, 14.0, 224.0),
 }
 
 
@@ -539,6 +555,17 @@ def _auto_detect_tt_platform() -> str:
     try:
         device = _get_tt_device()
         arch = str(device).lower()
+        # Blackhole takes precedence over Wormhole — its repr can include
+        # "blackhole" alongside other tokens, and we never want to silently
+        # fall through to a Wormhole entry on Blackhole hardware.
+        if "p150b" in arch:
+            return "tt_bh_p150b"
+        if "p150a" in arch:
+            return "tt_bh_p150a"
+        if "p100a" in arch or "p100" in arch:
+            return "tt_bh_p100a"
+        if "blackhole" in arch or "bh" in arch:
+            return "tt_bh_p150b"
         if "n300" in arch or "wormhole" in arch:
             return "tt_wh_n300"
         if "n150" in arch:

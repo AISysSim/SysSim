@@ -196,6 +196,20 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
         # BF16 matrix engine 74 TFLOP/s, FP32 SFPU 2 TFLOP/s, 12 GB GDDR6 288 GB/s
         ("wormhole", "tt_wh_n300", 74.0, 2.0, 288.0),
         ("n300", "tt_wh_n300", 74.0, 2.0, 288.0),
+
+        # Tenstorrent Blackhole P150A/B (per-chip: 140 Tensix cores @ 1.35 GHz)
+        # BF16 matrix engine 387 TFLOP/s, FP32 SFPU ~16 TFLOP/s,
+        # 32 GB GDDR6 @ 512 GB/s. Numbers from Tenstorrent product pages;
+        # refine with measured profiling on the target chip.
+        ("p150b", "tt_bh_p150b", 387.0, 16.0, 512.0),
+        ("p150a", "tt_bh_p150a", 387.0, 16.0, 512.0),
+        # Tenstorrent Blackhole P100A (per-chip: 120 Tensix cores @ 1.35 GHz)
+        # BF16 matrix engine 332 TFLOP/s, FP32 SFPU ~14 TFLOP/s,
+        # 28 GB GDDR6 @ 224 GB/s.
+        ("p100a", "tt_bh_p100a", 332.0, 14.0, 224.0),
+        ("p100", "tt_bh_p100a", 332.0, 14.0, 224.0),
+        # Generic Blackhole fallback — assume P150 if variant unknown.
+        ("blackhole", "tt_bh_p150b", 387.0, 16.0, 512.0),
     ]
 
     # Check device name against known patterns
