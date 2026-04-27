@@ -126,3 +126,21 @@ python -m syssim.predictors.compute_cost_profiler \
     --backend mlp \
     --epochs 300
 ```
+
+### Custom platforms (Tenstorrent Wormhole / Blackhole)
+
+The unified profiler can collect data on Tenstorrent hardware via `ttnn`
+without CUDA. End-to-end guides:
+
+- [docs/profiling/1.custom_platform_support.md](docs/profiling/1.custom_platform_support.md) — generic torch_xla / Wormhole walkthrough.
+- [docs/profiling/2.tenstorrent_blackhole.md](docs/profiling/2.tenstorrent_blackhole.md) — Blackhole P150A / P150B / P100A specifics, including auto-detect and resumable CSV sweeps.
+
+Quick start on a Blackhole P150B host:
+
+```bash
+python -m syssim.compute.compute_cost_profiler \
+    --operator all \
+    --platform tt_bh_p150b \
+    --csv-output-dir data/profiling/ \
+    --num-runs 100
+```
