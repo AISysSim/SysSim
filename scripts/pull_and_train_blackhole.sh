@@ -42,11 +42,14 @@ PY
 
     out="$LOCAL_MODELS/${op}_${PLATFORM}_xgb.pth"
     echo "[train] $op -> $out"
-    $PYTHON_BIN -m syssim.compute.compute_cost_profiler \
+    # OMP_NUM_THREADS=1 is a workaround for an XGBoost 3.2.0 + macOS
+    # arm64 + tree_method=hist segfault on small-to-medium datasets.
+    OMP_NUM_THREADS=1 $PYTHON_BIN -m syssim.compute.compute_cost_profiler \
         --operator "$op" \
+        --platform "$PLATFORM" \
         --data-path "$csv" \
         --output "$out" \
-        --backend xgboost 2>&1 | tail -8
+        --backend xgboost 2>&1 | tail -10
 done
 
 echo "[done] models in $LOCAL_MODELS:"
