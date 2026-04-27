@@ -154,8 +154,24 @@ class XGBoostEfficiencyModel(EfficiencyModel):
 class BackendManager:
     """Manages efficiency models per operator class."""
 
-    def __init__(self, model_dir: Optional[str] = None):
+    def __init__(
+        self,
+        model_dir: Optional[str] = None,
+        hw_name: Optional[str] = None,
+    ):
+        """Manage trained efficiency models.
+
+        Args:
+            model_dir: Directory containing per-operator .pth files.
+            hw_name: Optional explicit hardware name used to pick model
+                files like ``gemm_{hw_name}_xgb.pth``. When omitted, the
+                CUDA auto-detect path is used; pass an explicit name
+                (e.g. ``"tt_bh_p150b"``) to load Tenstorrent models on a
+                non-CUDA host. Falls back to the env var
+                ``SYSSIM_HW_NAME`` when also omitted.
+        """
         self.model_dir = model_dir
+        self.hw_name = hw_name or os.environ.get("SYSSIM_HW_NAME")
         self._models: dict[Any, Optional[EfficiencyModel]] = {}
 
         if model_dir is not None:
@@ -171,12 +187,17 @@ class BackendManager:
         from ..operator_graph import OperatorType
         from ..config import get_hardware_info
 
-        # Get hardware name
-        try:
-            _, hw_name = get_hardware_info()
-        except RuntimeError as e:
-            log.warning(f"Could not identify hardware: {e}")
-            return
+        # Resolve the hardware name. Prefer an explicit override (so the
+        # caller can load Tenstorrent models on a CUDA-less box) before
+        # falling back to the CUDA auto-detect path.
+        if self.hw_name is not None:
+            hw_name = self.hw_name
+        else:
+            try:
+                _, hw_name = get_hardware_info()
+            except RuntimeError as e:
+                log.warning(f"Could not identify hardware: {e}")
+                return
 
         for op_type in OperatorType:
             # Try XGBoost first (if available, prefer over MLP)
@@ -226,7 +247,8 @@ def get_backend_manager() -> BackendManager:
     if _backend_manager is None:
         # Check environment variable for model directory
         model_dir = os.environ.get("RLSYSIM_MODEL_DIR")
-        _backend_manager = BackendManager(model_dir)
+        hw_name = os.environ.get("SYSSIM_HW_NAME")
+        _backend_manager = BackendManager(model_dir, hw_name=hw_name)
     return _backend_manager
 
 
