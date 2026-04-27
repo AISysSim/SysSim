@@ -109,6 +109,31 @@ class TestAutoDetect:
             assert _auto_detect_tt_platform() == "tt_wh_n300"
 
 
+class TestBackendManagerHwOverride:
+    """The BackendManager must honour an explicit hw_name without calling
+    the CUDA-only auto-detect path. This is what lets a non-CUDA host load
+    Blackhole models from disk."""
+
+    def test_explicit_hw_name_skips_cuda_probe(self, tmp_path):
+        from syssim.compute.efficiency_models import BackendManager
+        # No model files exist — BackendManager should still construct and
+        # report no models, but importantly should NOT raise from the
+        # missing CUDA device.
+        with mock.patch("syssim.config.torch") as torch_mock:
+            torch_mock.cuda.is_available.return_value = False
+            mgr = BackendManager(str(tmp_path), hw_name="tt_bh_p150b")
+        assert mgr.hw_name == "tt_bh_p150b"
+        assert all(v is None for v in mgr._models.values()) or mgr._models == {}
+
+    def test_env_var_picks_up_hw_name(self, tmp_path, monkeypatch):
+        from syssim.compute.efficiency_models import BackendManager
+        monkeypatch.setenv("SYSSIM_HW_NAME", "tt_bh_p100a")
+        with mock.patch("syssim.config.torch") as torch_mock:
+            torch_mock.cuda.is_available.return_value = False
+            mgr = BackendManager(str(tmp_path))
+        assert mgr.hw_name == "tt_bh_p100a"
+
+
 class TestGetHardwareInfoLookup:
     """Patch ``torch.cuda`` so ``get_hardware_info`` matches Blackhole names."""
 
