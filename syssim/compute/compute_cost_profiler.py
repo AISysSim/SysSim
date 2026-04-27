@@ -2270,12 +2270,21 @@ if __name__ == "__main__":
         print("=" * 80)
 
         csv_path = Path(args.data_path)
-        _, hw_name = get_hardware_info()
         backend_suffix = "xgb" if args.backend == "xgboost" else "mlp"
 
         if args.output is not None:
+            # Explicit output path — skip the CUDA probe so this also runs on
+            # CPU-only boxes (a TT host or any laptop) when training models
+            # from CSVs collected elsewhere.
             output_path = args.output
         else:
+            # Auto-derive name from detected hardware. Prefer --platform when
+            # the user already named a TT chip; otherwise fall back to the
+            # CUDA probe.
+            if is_tt:
+                hw_name = args.platform if args.platform != "auto_tt" else "auto_tt"
+            else:
+                _, hw_name = get_hardware_info()
             output_path = str(Path(output_dir) / f"{args.operator}_{hw_name}_{backend_suffix}.pth")
             print(f"  Auto-derived model path: {output_path}")
 
