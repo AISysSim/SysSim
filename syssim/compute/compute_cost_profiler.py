@@ -536,10 +536,29 @@ _TT_DEVICE = None
 
 
 def _get_tt_device():
+    """Open the first usable Tenstorrent device.
+
+    On dual-chip cards (e.g. Blackhole P150B) the fabric control plane
+    sometimes only exposes chip 1 under the default mesh graph descriptor,
+    so chip 0 throws ``TT_FATAL: Physical chip id 0 not found in control
+    plane chip mapping``. Try device 0 first and fall back to device 1
+    rather than failing the whole profiling run.
+    """
     global _TT_DEVICE
     if _TT_DEVICE is None:
         ttnn = importlib.import_module("ttnn")
-        _TT_DEVICE = ttnn.open_device(device_id=0)
+        last_err: Exception | None = None
+        for dev_id in (0, 1):
+            try:
+                _TT_DEVICE = ttnn.open_device(device_id=dev_id)
+                break
+            except Exception as exc:
+                last_err = exc
+                continue
+        if _TT_DEVICE is None:
+            raise RuntimeError(
+                f"failed to open any Tenstorrent device (last error: {last_err})"
+            )
     return _TT_DEVICE
 
 
@@ -551,27 +570,50 @@ def _close_tt_device():
         _TT_DEVICE = None
 
 
-def _auto_detect_tt_platform() -> str:
+def _ttnn_arch_string() -> str:
+    """Return a lower-case arch family string from ttnn, without opening a device.
+
+    Modern ttnn exposes the chip family via ``ttnn.get_arch_name()``
+    (returns e.g. ``"blackhole"`` / ``"wormhole_b0"``). The historical
+    fallback was to scrape ``str(device)``, but on recent ttnn the device
+    repr is a generic ``MeshDevice(1x1 grid, 1 devices)`` and carries no
+    arch hint — so the older ``str(device)`` matchers would silently
+    misroute Blackhole hardware to a Wormhole entry. Try the dedicated
+    API first, fall back to the device repr only if it fails.
+    """
     try:
-        device = _get_tt_device()
-        arch = str(device).lower()
-        # Blackhole takes precedence over Wormhole — its repr can include
-        # "blackhole" alongside other tokens, and we never want to silently
-        # fall through to a Wormhole entry on Blackhole hardware.
-        if "p150b" in arch:
-            return "tt_bh_p150b"
-        if "p150a" in arch:
-            return "tt_bh_p150a"
-        if "p100a" in arch or "p100" in arch:
-            return "tt_bh_p100a"
-        if "blackhole" in arch or "bh" in arch:
-            return "tt_bh_p150b"
-        if "n300" in arch or "wormhole" in arch:
-            return "tt_wh_n300"
-        if "n150" in arch:
-            return "tt_wh_n150"
+        ttnn = importlib.import_module("ttnn")
+        name = ttnn.get_arch_name()
+        return str(name).lower()
     except Exception:
-        pass
+        try:
+            return str(_get_tt_device()).lower()
+        except Exception:
+            return ""
+
+
+def _auto_detect_tt_platform() -> str:
+    arch = _ttnn_arch_string()
+    # Blackhole variants — `ttnn.get_arch_name()` only returns the family
+    # ('blackhole'); P100A vs P150A vs P150B has to be supplied by the
+    # caller via --platform. Default the family fallback to P150B because
+    # that's the most widely deployed Blackhole SKU.
+    if "p150b" in arch:
+        return "tt_bh_p150b"
+    if "p150a" in arch:
+        return "tt_bh_p150a"
+    if "p100a" in arch or "p100" in arch:
+        return "tt_bh_p100a"
+    if "blackhole" in arch or "bh" in arch:
+        return "tt_bh_p150b"
+    # Wormhole variants — `ttnn.get_arch_name()` typically returns
+    # 'wormhole_b0', so cover the family and the SKU patterns.
+    if "n300" in arch:
+        return "tt_wh_n300"
+    if "n150" in arch:
+        return "tt_wh_n150"
+    if "wormhole" in arch:
+        return "tt_wh_n300"
     print("  Warning: could not auto-detect TT platform, defaulting to tt_wh_n300")
     return "tt_wh_n300"
 

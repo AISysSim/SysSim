@@ -62,7 +62,22 @@ class TestBlackholeDatabase:
 
 
 class TestAutoDetect:
-    """Patch ``_get_tt_device`` to return a synthetic device repr."""
+    """Patch ttnn.get_arch_name / device repr to cover both code paths."""
+
+    @pytest.mark.parametrize(
+        "arch_name,expected",
+        [
+            ("Blackhole", "tt_bh_p150b"),
+            ("blackhole", "tt_bh_p150b"),
+            ("Wormhole_b0", "tt_wh_n300"),
+            ("wormhole_b0", "tt_wh_n300"),
+        ],
+    )
+    def test_get_arch_name_path(self, arch_name, expected):
+        """When ``ttnn.get_arch_name()`` is available it should be used directly."""
+        fake_ttnn = types.SimpleNamespace(get_arch_name=lambda: arch_name)
+        with mock.patch.dict(sys.modules, {"ttnn": fake_ttnn}):
+            assert _auto_detect_tt_platform() == expected
 
     @pytest.mark.parametrize(
         "device_repr,expected",
@@ -70,27 +85,27 @@ class TestAutoDetect:
             ("Device(arch=Blackhole, P150B chip0)", "tt_bh_p150b"),
             ("BlackHole P150A device", "tt_bh_p150a"),
             ("BH P100A", "tt_bh_p100a"),
-            ("Device(arch=blackhole)", "tt_bh_p150b"),
             ("Wormhole N300 chip", "tt_wh_n300"),
             ("Device(arch=N150)", "tt_wh_n150"),
         ],
     )
-    def test_arch_string_routing(self, device_repr, expected):
-        fake = mock.MagicMock()
-        fake.__str__ = lambda self: device_repr
-        with mock.patch(
-            "syssim.compute.compute_cost_profiler._get_tt_device",
-            return_value=fake,
-        ):
+    def test_device_repr_fallback(self, device_repr, expected):
+        """Fallback path: ttnn.get_arch_name() raises, scrape str(device)."""
+        fake_ttnn = types.SimpleNamespace(
+            get_arch_name=mock.Mock(side_effect=RuntimeError("no get_arch_name")),
+        )
+        fake_device = mock.MagicMock()
+        fake_device.__str__ = lambda self: device_repr
+        with mock.patch.dict(sys.modules, {"ttnn": fake_ttnn}), \
+             mock.patch(
+                 "syssim.compute.compute_cost_profiler._get_tt_device",
+                 return_value=fake_device,
+             ):
             assert _auto_detect_tt_platform() == expected
 
     def test_unknown_falls_back_to_n300(self):
-        fake = mock.MagicMock()
-        fake.__str__ = lambda self: "GenericAccelerator v1"
-        with mock.patch(
-            "syssim.compute.compute_cost_profiler._get_tt_device",
-            return_value=fake,
-        ):
+        fake_ttnn = types.SimpleNamespace(get_arch_name=lambda: "unknown_arch")
+        with mock.patch.dict(sys.modules, {"ttnn": fake_ttnn}):
             assert _auto_detect_tt_platform() == "tt_wh_n300"
 
 
