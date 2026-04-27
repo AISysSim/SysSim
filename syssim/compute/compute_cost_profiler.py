@@ -854,7 +854,10 @@ def _profile_gemm_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
                     print(f"  [{count}/{total}] M={m}, N={n}, K={k}  (skipped {skipped})")
                 try:
                     t = _profile_gemm_tt(m, n, k, num_runs)
-                except (RuntimeError, MemoryError):
+                except Exception as exc:
+                    # Long unattended sweeps must not abort on a single
+                    # bad config — log and record -1.0, same as OOM.
+                    print(f"    [skip] gemm({m},{n},{k}): {exc}")
                     t = -1.0
                 row = {"M": m, "N": n, "K": k, "t_measured_ms": t}
                 _append_row(csv_path, row, columns)
@@ -884,7 +887,9 @@ def _profile_attn_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
                             t = _profile_attention_tt(
                                 batch=bs, num_heads=nh, seq_len=seq,
                                 head_dim=hd, num_kv_heads=nkv, num_runs=num_runs)
-                        except (RuntimeError, MemoryError):
+                        except Exception as exc:
+                            print(f"    [skip] attn(bs={bs},seq={seq},nh={nh},"
+                                  f"nkv={nkv},hd={hd}): {exc}")
                             t = -1.0
                         row = {"bs": bs, "seq": seq, "nh": nh,
                                "nkv": nkv, "hd": hd, "t_measured_ms": t}
@@ -908,7 +913,8 @@ def _profile_rmsnorm_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
                 print(f"  [{count}/{total}] seq={seq}, dim={dim}  (skipped {skipped})")
             try:
                 t = _profile_rmsnorm_tt(seq, dim, num_runs)
-            except (RuntimeError, MemoryError):
+            except Exception as exc:
+                print(f"    [skip] rmsnorm(seq={seq},dim={dim}): {exc}")
                 t = -1.0
             row = {"seq": seq, "dim": dim, "t_measured_ms": t}
             _append_row(csv_path, row, columns)
@@ -931,7 +937,8 @@ def _profile_silu_grid_tt(grid: dict, num_runs: int, csv_path: Path) -> int:
                 print(f"  [{count}/{total}] seq={seq}, dim={dim}  (skipped {skipped})")
             try:
                 t = _profile_silu_tt(seq, dim, num_runs)
-            except (RuntimeError, MemoryError):
+            except Exception as exc:
+                print(f"    [skip] silu(seq={seq},dim={dim}): {exc}")
                 t = -1.0
             row = {"seq": seq, "dim": dim, "t_measured_ms": t}
             _append_row(csv_path, row, columns)
