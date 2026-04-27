@@ -36,14 +36,23 @@ from ..operator_graph import OperatorType
 from ..config import HardwareInfo, get_hardware_info
 from .compute_cost_predictor import roofline_estimate, aten
 
+# Profiling-only dependencies — required for both profiling and training.
 try:
     import numpy as np
     import pandas as pd
     import yaml
+    import pickle
+    HAS_PROFILING_DEPS = True
+except ImportError:
+    HAS_PROFILING_DEPS = False
+
+# Training-only dependencies — required only when fitting MLP/XGBoost models.
+# On a TT-only host the ttnn Python env may not ship sklearn/xgboost, and
+# requiring them just to collect CSV data would block profiling needlessly.
+try:
     from sklearn.model_selection import KFold
     import xgboost as xgb
-    import pickle
-    HAS_TRAINING_DEPS = True
+    HAS_TRAINING_DEPS = HAS_PROFILING_DEPS
 except ImportError:
     HAS_TRAINING_DEPS = False
 
@@ -1823,8 +1832,11 @@ def profile_operator(
         - {output_dir}/{operator}_{hw_name}_data.csv: Clean profiling data
         - {output_dir}/{operator}_{hw_name}_checkpoint.pkl: Checkpoint file (temporary)
     """
-    if not HAS_TRAINING_DEPS:
-        raise ImportError("Install numpy and pandas for profiling")
+    if not HAS_PROFILING_DEPS:
+        raise ImportError(
+            "Profiling needs numpy + pandas + pyyaml; install them in the "
+            "active Python environment before running compute_cost_profiler."
+        )
     if platform == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA required for profiling")
 
