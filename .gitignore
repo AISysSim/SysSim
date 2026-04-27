@@ -61,6 +61,8 @@ tests/unit/saved_checkpoint/
 
 # virtual env directory for format
 venv
+# Local uv-managed venvs
+.venv*/
 
 ## Trained models and profiling data
 # Trained model files
@@ -73,3 +75,7 @@ data/trained_models/*.csv
 core
 
 PROGRESS.md
+
+## Local working memory and tool state (not part of the project)
+.claude/
+planning/
