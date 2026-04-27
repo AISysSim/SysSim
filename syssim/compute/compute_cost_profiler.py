@@ -1952,6 +1952,8 @@ def train_efficiency_model(
     output_path: str,
     backend: str = "xgboost",
     epochs: int = 300,
+    hw_info: HardwareInfo | None = None,
+    hw_name: str | None = None,
 ) -> tuple[dict, float, float]:
     """Train efficiency model from existing clean data. No profiling.
 
@@ -1984,8 +1986,12 @@ def train_efficiency_model(
     print(f"TRAINING MODE: {operator.upper()} (Backend: {backend.upper()})")
     print(f"=" * 80)
 
-    # Auto-detect hardware (must match profiling hardware!)
-    hw_info, hw_name = get_hardware_info()
+    # Hardware spec (must match the chip the CSV was profiled on!).
+    # When training Blackhole / Wormhole models on a CPU box, the caller
+    # passes the explicit TT_HW_DATABASE entry so we don't fall through
+    # to the CUDA-only auto-detect path.
+    if hw_info is None or hw_name is None:
+        hw_info, hw_name = get_hardware_info()
     print(f"\nDetected hardware: {hw_name}")
     print(f"  Peak TFLOP/s (MM):   {hw_info.peak_tflops_mm:.1f}")
     print(f"  Peak TFLOP/s (Math): {hw_info.peak_tflops_math:.1f}")
@@ -2272,19 +2278,32 @@ if __name__ == "__main__":
         csv_path = Path(args.data_path)
         backend_suffix = "xgb" if args.backend == "xgboost" else "mlp"
 
+        # Resolve hw_info/hw_name. For TT platforms, build HardwareInfo
+        # directly from the database so training works on a CPU host.
+        explicit_hw_info: HardwareInfo | None = None
+        explicit_hw_name: str | None = None
+        if is_tt:
+            tt_key = args.platform
+            if tt_key == "auto_tt":
+                tt_key = _auto_detect_tt_platform()
+            if tt_key in TT_HW_DATABASE:
+                mm, mm_c, math_t, bw = TT_HW_DATABASE[tt_key]
+                explicit_hw_info = HardwareInfo(
+                    peak_tflops_mm=mm,
+                    peak_tflops_math=math_t,
+                    peak_memory_bandwidth_gbps=bw,
+                    peak_tflops_mm_conservative=mm_c,
+                )
+                explicit_hw_name = tt_key
+
         if args.output is not None:
-            # Explicit output path — skip the CUDA probe so this also runs on
-            # CPU-only boxes (a TT host or any laptop) when training models
-            # from CSVs collected elsewhere.
             output_path = args.output
         else:
-            # Auto-derive name from detected hardware. Prefer --platform when
-            # the user already named a TT chip; otherwise fall back to the
-            # CUDA probe.
-            if is_tt:
-                hw_name = args.platform if args.platform != "auto_tt" else "auto_tt"
-            else:
-                _, hw_name = get_hardware_info()
+            hw_name = (
+                explicit_hw_name
+                if explicit_hw_name is not None
+                else get_hardware_info()[1]
+            )
             output_path = str(Path(output_dir) / f"{args.operator}_{hw_name}_{backend_suffix}.pth")
             print(f"  Auto-derived model path: {output_path}")
 
@@ -2294,4 +2313,6 @@ if __name__ == "__main__":
             output_path=output_path,
             backend=args.backend,
             epochs=args.epochs,
+            hw_info=explicit_hw_info,
+            hw_name=explicit_hw_name,
         )
