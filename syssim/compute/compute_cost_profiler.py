@@ -316,7 +316,41 @@ def _build_tt_grids() -> dict[str, dict]:
     }
 
 
+def _build_tt_mini_grids() -> dict[str, dict]:
+    """Compact grid for fast unattended sweeps.
+
+    Powers-of-two only, capped at modest sizes that fit in DRAM after the
+    JIT cache fills. ~1k GEMM configs / ~600 attention / ~120 each for
+    rmsnorm and silu. Designed to complete a 4-operator sweep in ~1 hour
+    on a Blackhole P150B (single chip) so we can train a working
+    efficiency model without burning a full overnight run.
+    """
+    return {
+        "gemm": {
+            "M": _generate_power_of_two_range(2, 8192),
+            "N": _generate_power_of_two_range(256, 8192),
+            "K": _generate_power_of_two_range(256, 8192),
+        },
+        "attn": {
+            "bs": _generate_power_of_two_range(1, 8),
+            "seq": _generate_power_of_two_range(64, 8192),
+            "nh": _generate_power_of_two_range(2, 64),
+            "nkv": _generate_power_of_two_range(1, 8),
+            "hd": [64, 128],
+        },
+        "rmsnorm": {
+            "seq": _generate_power_of_two_range(2, 8192),
+            "dim": _generate_power_of_two_range(128, 8192),
+        },
+        "silu": {
+            "seq": _generate_power_of_two_range(2, 8192),
+            "dim": _generate_power_of_two_range(768, 8192),
+        },
+    }
+
+
 TT_COMPUTE_GRIDS = _build_tt_grids()
+TT_COMPUTE_GRIDS_MINI = _build_tt_mini_grids()
 
 
 def _profile_gemm(m: int, n: int, k: int, num_runs: int = 100) -> float:
@@ -1816,6 +1850,7 @@ def profile_operator(
     checkpoint_interval: int = 1000,
     platform: str = "cuda",
     csv_output_dir: str | None = None,
+    grid_size: str = "full",
 ) -> Path:
     """Profile operator and save clean data with checkpointing support.
 
@@ -1871,8 +1906,15 @@ def profile_operator(
     csv_base_path.mkdir(parents=True, exist_ok=True)
     csv_path = csv_base_path / f"{operator}_{hw_name}_data.csv"
 
-    # Get profiling grid
-    grid = TT_COMPUTE_GRIDS[operator] if is_tt else COMPUTE_GRIDS[operator]
+    # Get profiling grid. The "mini" variant only exists for TT platforms;
+    # CUDA profiling always uses the full grid because the dataset comes
+    # from established baselines.
+    if is_tt and grid_size == "mini":
+        grid = TT_COMPUTE_GRIDS_MINI[operator]
+    elif is_tt:
+        grid = TT_COMPUTE_GRIDS[operator]
+    else:
+        grid = COMPUTE_GRIDS[operator]
     print(f"\nProfiling {operator} operator...")
 
     # Calculate total configurations
@@ -2201,6 +2243,14 @@ if __name__ == "__main__":
         default=1000,
         help="Save checkpoint every N configurations during profiling (default: 1000)"
     )
+    parser.add_argument(
+        "--grid-size",
+        choices=["full", "mini"],
+        default="full",
+        help="TT-only: 'mini' uses powers-of-two only and caps at 8K dims "
+             "(~1k GEMM configs / ~600 attn / ~120 each rmsnorm/silu). "
+             "Useful for fast unattended sweeps that fit in P150B DRAM."
+    )
 
     args = parser.parse_args()
 
@@ -2253,6 +2303,7 @@ if __name__ == "__main__":
                 checkpoint_interval=args.checkpoint_interval,
                 platform=args.platform,
                 csv_output_dir=csv_output_dir,
+                grid_size=args.grid_size,
             )
         raise SystemExit(0)
 
