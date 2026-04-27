@@ -2224,8 +2224,14 @@ if __name__ == "__main__":
 
     operators = ALL_OPERATORS if args.operator == "all" else [args.operator]
 
-    # === TT MODE ===
-    if is_tt:
+    # === TT PROFILING MODE ===
+    # Only enter the TT profiling branch when no --data-path is given.
+    # When --data-path is set the user wants training mode, even on a TT
+    # platform (typical when training on a CPU box from a CSV collected
+    # earlier on the TT host). Falling through to the training branch
+    # below also lets --platform tt_bh_p150b pick the right HardwareInfo
+    # for the trainer.
+    if is_tt and args.data_path is None:
         if args.output is not None or (args.output_dir is not None and args.csv_output_dir is None):
             print("WARNING: TT mode — --output and --output-dir are ineffective. "
                   "Only --csv-output-dir is used for profiling data.")
