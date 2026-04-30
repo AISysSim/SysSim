@@ -279,30 +279,93 @@ COMPUTE_GRIDS = {
 }
 
 
-def _profile_gemm(m: int, n: int, k: int, num_runs: int = 100) -> float:
-    """Profile a single GEMM configuration and return median time in ms."""
+def _profile_gemm(m: int, n: int, k: int, num_runs: int = 100, dtype: str = "fp16") -> float:
+    """Profile a single GEMM at the requested precision; return median time (ms).
+
+    Supported dtypes:
+      "fp16" - PyTorch torch.mm with float16 inputs.
+      "fp8"  - FlashInfer mm_fp8 with float8_e4m3fn inputs and per-tensor scale.
+      "fp4"  - FlashInfer mm_fp4 with NVFP4 quantized inputs and block scales.
+
+    Returns -1.0 on OOM/unsupported-shape failures (e.g. FP8/FP4 alignment violations);
+    callers filter these rows before training. Returns positive median ms otherwise.
+    """
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA required for profiling")
 
     device = torch.device("cuda")
-    a = torch.randn(m, k, device=device, dtype=torch.float16)
-    b = torch.randn(k, n, device=device, dtype=torch.float16)
 
-    # Warmup
-    for _ in range(5):
-        torch.mm(a, b)
-    torch.cuda.synchronize()
+    try:
+        if dtype == "fp16":
+            a = torch.randn(m, k, device=device, dtype=torch.float16)
+            b = torch.randn(k, n, device=device, dtype=torch.float16)
+            kernel = lambda: torch.mm(a, b)
 
-    # Profile
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        torch.mm(a, b)
+        elif dtype == "fp8":
+            # torch._scaled_mm is the general-purpose FP8 GEMM (Hopper/Blackwell).
+            # FlashInfer mm_fp8 requires a TRT-LLM block layout (3D), unsuitable for
+            # general profiling sweeps.
+            if k % 16 != 0 or n % 16 != 0 or m == 0:
+                return -1.0
+            a_fp16 = torch.randn(m, k, device=device, dtype=torch.float16)
+            b_fp16 = torch.randn(n, k, device=device, dtype=torch.float16)
+            a_amax = a_fp16.abs().amax().clamp(min=1e-4)
+            b_amax = b_fp16.abs().amax().clamp(min=1e-4)
+            a = (a_fp16 * (448.0 / a_amax)).to(torch.float8_e4m3fn)
+            b = (b_fp16 * (448.0 / b_amax)).to(torch.float8_e4m3fn)
+            scale_a = (a_amax / 448.0).to(torch.float32).reshape(1)
+            scale_b = (b_amax / 448.0).to(torch.float32).reshape(1)
+            # torch._scaled_mm computes (scale_a * a) @ (scale_b * b_T).
+            # b is laid out (N, K), b.t() gives (K, N) view as required.
+            kernel = lambda: torch._scaled_mm(
+                a, b.t(), scale_a=scale_a, scale_b=scale_b, out_dtype=torch.bfloat16
+            )
+
+        elif dtype == "fp4":
+            from flashinfer.gemm import mm_fp4
+            from flashinfer import nvfp4_quantize
+            # NVFP4 GEMM: K multiple of 32 (block size 16 + 128x4 scale layout)
+            # and M/N alignment to 16 for GEMM tile.
+            if k % 32 != 0 or n % 16 != 0 or m % 16 != 0 or m == 0:
+                return -1.0
+            a_fp16 = torch.randn(m, k, device=device, dtype=torch.float16)
+            b_fp16 = torch.randn(n, k, device=device, dtype=torch.float16)
+            # Global scale: (448 * 6) / amax (matches FlashInfer mm_fp4 example).
+            a_global_sf = (448.0 * 6.0) / a_fp16.float().abs().nan_to_num().max()
+            b_global_sf = (448.0 * 6.0) / b_fp16.float().abs().nan_to_num().max()
+            a_q, a_sf = nvfp4_quantize(a_fp16, a_global_sf.reshape(1))
+            b_q, b_sf = nvfp4_quantize(b_fp16, b_global_sf.reshape(1))
+            alpha = (1.0 / (a_global_sf * b_global_sf)).reshape(1).to(torch.float32)
+            # mm_fp4 expects b in (k, n) column-major layout; nvfp4_quantize returns
+            # (N, K_packed), so .T gives the required column-major view.
+            kernel = lambda: mm_fp4(
+                a_q, b_q.T, a_sf, b_sf.T, alpha=alpha, out_dtype=torch.bfloat16
+            )
+
+        else:
+            raise ValueError(f"Unknown dtype '{dtype}'")
+
+        # Warmup
+        for _ in range(5):
+            kernel()
         torch.cuda.synchronize()
-        end = time.perf_counter()
-        times.append((end - start) * 1000)  # Convert to ms
 
-    return float(np.median(times))
+        # Profile
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            kernel()
+            torch.cuda.synchronize()
+            end = time.perf_counter()
+            times.append((end - start) * 1000)
+        return float(np.median(times))
+
+    except (torch.cuda.OutOfMemoryError, RuntimeError, ValueError, AssertionError):
+        # Common in low-precision profiling: shape constraints, unsupported sizes.
+        # ValueError covers FlashInfer K/N alignment errors; AssertionError covers
+        # fp8/fp4 unsupported-backend paths.
+        torch.cuda.empty_cache()
+        return -1.0
 
 
 def _profile_attention(
@@ -311,56 +374,88 @@ def _profile_attention(
     seq_len: int,
     head_dim: int,
     num_kv_heads: int = None,
-    num_runs: int = 100
+    num_runs: int = 100,
+    dtype: str = "fp16",
 ) -> float:
-    """Profile a single attention configuration and return median time in ms.
+    """Profile attention at the requested precision; return median time (ms).
 
-    Supports both MHA (multi-head attention) and GQA (grouped query attention).
+    Supports MHA and GQA.
 
-    Args:
-        batch: Batch size
-        num_heads: Number of query heads
-        seq_len: Sequence length
-        head_dim: Head dimension
-        num_kv_heads: Number of key/value heads (for GQA). If None, defaults to num_heads (MHA).
-        num_runs: Number of profiling runs
+    Supported dtypes:
+      "fp16" - torch.nn.functional.scaled_dot_product_attention with float16.
+      "fp8"  - flashinfer.single_prefill_with_kv_cache with FP8 q/k/v + scale tensors.
+               Single-batch only (FlashInfer single-prefill API).
+      "fp4"  - Not supported by FlashInfer 0.6 attention path; returns -1.0.
 
-    Returns:
-        Median time in milliseconds
+    Returns -1.0 on unsupported configurations (e.g. fp8 with batch>1, fp4 always)
+    so the row is filtered before training.
     """
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA required for profiling")
-
-    # Default to MHA if num_kv_heads not specified
     if num_kv_heads is None:
         num_kv_heads = num_heads
 
     device = torch.device("cuda")
-    q = torch.randn(batch, num_heads, seq_len, head_dim, device=device, dtype=torch.float16)
-    k = torch.randn(batch, num_kv_heads, seq_len, head_dim, device=device, dtype=torch.float16)
-    v = torch.randn(batch, num_kv_heads, seq_len, head_dim, device=device, dtype=torch.float16)
+    try:
+        if dtype == "fp16":
+            q = torch.randn(batch, num_heads, seq_len, head_dim, device=device, dtype=torch.float16)
+            k = torch.randn(batch, num_kv_heads, seq_len, head_dim, device=device, dtype=torch.float16)
+            v = torch.randn(batch, num_kv_heads, seq_len, head_dim, device=device, dtype=torch.float16)
+            if num_kv_heads != num_heads:
+                assert num_heads % num_kv_heads == 0, (
+                    f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+                )
+                k = k.repeat_interleave(num_heads // num_kv_heads, dim=1)
+                v = v.repeat_interleave(num_heads // num_kv_heads, dim=1)
+            kernel = lambda: torch.nn.functional.scaled_dot_product_attention(q, k, v)
 
-    # Handle GQA: expand K/V to match Q's head count if needed
-    if num_kv_heads != num_heads:
-        assert num_heads % num_kv_heads == 0, f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
-        k = k.repeat_interleave(num_heads // num_kv_heads, dim=1)
-        v = v.repeat_interleave(num_heads // num_kv_heads, dim=1)
+        elif dtype == "fp8":
+            from flashinfer import single_prefill_with_kv_cache
+            # single_prefill_with_kv_cache is single-batch (no batch dim) with NHD layout.
+            if batch != 1:
+                return -1.0
+            q_fp16 = torch.randn(seq_len, num_heads, head_dim, device=device, dtype=torch.float16)
+            k_fp16 = torch.randn(seq_len, num_kv_heads, head_dim, device=device, dtype=torch.float16)
+            v_fp16 = torch.randn(seq_len, num_kv_heads, head_dim, device=device, dtype=torch.float16)
+            scale_q = (q_fp16.abs().amax() / 448.0).clamp(min=1e-4).reshape(1)
+            scale_k = (k_fp16.abs().amax() / 448.0).clamp(min=1e-4).reshape(1)
+            scale_v = (v_fp16.abs().amax() / 448.0).clamp(min=1e-4).reshape(1)
+            q = (q_fp16 / scale_q).to(torch.float8_e4m3fn)
+            k = (k_fp16 / scale_k).to(torch.float8_e4m3fn)
+            v = (v_fp16 / scale_v).to(torch.float8_e4m3fn)
+            kernel = lambda: single_prefill_with_kv_cache(
+                q, k, v,
+                scale_q=scale_q, scale_k=scale_k, scale_v=scale_v,
+                o_dtype=torch.bfloat16, kv_layout="NHD",
+            )
 
-    # Warmup
-    for _ in range(10):
-        torch.nn.functional.scaled_dot_product_attention(q, k, v)
-    torch.cuda.synchronize()
+        elif dtype == "fp4":
+            # FlashInfer 0.6 has no FP4 attention path; record as N/A.
+            return -1.0
 
-    # Profile
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        else:
+            raise ValueError(f"Unknown dtype '{dtype}'")
+
+        # Warmup
+        for _ in range(10):
+            kernel()
         torch.cuda.synchronize()
-        end = time.perf_counter()
-        times.append((end - start) * 1000)
 
-    return float(np.median(times))
+        # Profile
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            kernel()
+            torch.cuda.synchronize()
+            end = time.perf_counter()
+            times.append((end - start) * 1000)
+        return float(np.median(times))
+
+    except (torch.cuda.OutOfMemoryError, RuntimeError, ValueError, AssertionError):
+        # AssertionError covers FlashInfer's "fa2 backend doesn't support fp8"
+        # path (single_prefill on sm_120 falls back to fa2, which rejects FP8).
+        torch.cuda.empty_cache()
+        return -1.0
 
 
 def _profile_math(batch: int, hidden: int, num_runs: int = 100) -> float:
@@ -479,8 +574,8 @@ def _profile_silu(seq: int, dim: int, num_runs: int = 100) -> float:
     return float(np.median(times))
 
 
-def _profile_gemm_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list[dict]:
-    """Profile GEMM operator across parameter grid.
+def _profile_gemm_grid(hw_info: HardwareInfo, grid: dict, num_runs: int, dtype: str = "fp16") -> list[dict]:
+    """Profile GEMM operator across parameter grid at the requested precision.
 
     Saves ONLY clean measurement data (no roofline, no efficiency).
     Roofline features are computed on-the-fly during training.
@@ -493,9 +588,9 @@ def _profile_gemm_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list
         for n in grid["N"]:
             for k in grid["K"]:
                 count += 1
-                print(f"Profiling {count}/{total}: M={m}, N={n}, K={k}")
+                print(f"Profiling [{dtype}] {count}/{total}: M={m}, N={n}, K={k}")
 
-                t_measured = _profile_gemm(m, n, k, num_runs)
+                t_measured = _profile_gemm(m, n, k, num_runs, dtype=dtype)
 
                 # Save only clean data: input features + measured time
                 results.append({
@@ -508,7 +603,7 @@ def _profile_gemm_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list
     return results
 
 
-def _profile_attn_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list[dict]:
+def _profile_attn_grid(hw_info: HardwareInfo, grid: dict, num_runs: int, dtype: str = "fp16") -> list[dict]:
     """Profile attention operator across parameter grid with GQA support.
 
     Grid structure (from PROFILE_PLAN.md):
@@ -532,7 +627,7 @@ def _profile_attn_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list
                 for nkv in grid["nkv"]:
                     for hd in grid["hd"]:
                         count += 1
-                        print(f"Profiling {count}/{total}: bs={bs}, seq={seq}, "
+                        print(f"Profiling [{dtype}] {count}/{total}: bs={bs}, seq={seq}, "
                               f"nh={nh}, nkv={nkv}, hd={hd}")
 
                         t_measured = _profile_attention(
@@ -541,7 +636,8 @@ def _profile_attn_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list
                             seq_len=seq,
                             head_dim=hd,
                             num_kv_heads=nkv,
-                            num_runs=num_runs
+                            num_runs=num_runs,
+                            dtype=dtype,
                         )
 
                         # Save only clean data: input features + measured time
@@ -646,17 +742,42 @@ def _profile_silu_grid(hw_info: HardwareInfo, grid: dict, num_runs: int) -> list
     return results
 
 
+def _bytes_per_element_for_dtype(dtype: str) -> float:
+    """Return bytes per element for a profiling dtype string.
+
+    FP16 = 2 bytes, FP8 = 1 byte, FP4 = 0.5 bytes (packed two-per-byte).
+    """
+    return {"fp16": 2.0, "fp8": 1.0, "fp4": 0.5}[dtype]
+
+
+def _peak_tflops_for_dtype(hw_info: HardwareInfo, dtype: str) -> float:
+    """Return matrix-unit peak TFLOP/s for the given dtype.
+
+    Falls back to peak_tflops_mm when per-dtype peak is unset.
+    """
+    if dtype == "fp8":
+        return (hw_info.peak_tflops_mm_fp8
+                if hw_info.peak_tflops_mm_fp8 is not None else hw_info.peak_tflops_mm)
+    if dtype == "fp4":
+        return (hw_info.peak_tflops_mm_fp4
+                if hw_info.peak_tflops_mm_fp4 is not None else hw_info.peak_tflops_mm)
+    return hw_info.peak_tflops_mm
+
+
 def _add_roofline_and_efficiency(
     df: "pd.DataFrame",
     hw_info: HardwareInfo,
-    operator: str
+    operator: str,
+    dtype: str = "fp16",
 ) -> "pd.DataFrame":
     """Add roofline time and efficiency columns to profiling data.
 
     Enables data reuse: if roofline model changes, retrain without re-profiling.
 
-    IMPORTANT: Uses roofline_estimate() from compute_cost_predictor module.
-    Does NOT duplicate roofline formula - maintains single source of truth.
+    For FP16, uses roofline_estimate() from compute_cost_predictor (single source
+    of truth). For FP8/FP4, computes the roofline directly here using the
+    dtype-appropriate peak FLOP/s and bytes-per-element so efficiency lands in
+    (0, 1] when measured times are at the FP8/FP4 throughput tier.
 
     Uses fake tensors (FakeTensorMode) for ZERO memory overhead - only tracks
     metadata (shape, dtype, device). roofline_estimate() only needs tensor
@@ -666,6 +787,8 @@ def _add_roofline_and_efficiency(
         df: Clean profiling data (input features + t_measured_ms only)
         hw_info: Hardware specifications
         operator: Operator type ("gemm", "attn", "rmsnorm", "silu", or "math")
+        dtype: Profiling tensor precision ("fp16"/"fp8"/"fp4"). Affects compute
+               peak (peak_tflops_mm_fp8/fp4) and per-element byte count.
 
     Returns:
         DataFrame with added columns: t_roofline_ms, efficiency
@@ -675,10 +798,15 @@ def _add_roofline_and_efficiency(
     roofline_data = []
     total = len(df)
 
-    print(f"Computing roofline for {total} configurations...")
+    print(f"Computing roofline for {total} configurations (dtype={dtype})...")
 
     # Create fake tensor mode - zero memory overhead!
     fake_mode = FakeTensorMode()
+
+    # Pre-compute per-dtype constants
+    dtype_bytes = _bytes_per_element_for_dtype(dtype)
+    peak_flop_s_dtype = _peak_tflops_for_dtype(hw_info, dtype) * 1e12
+    peak_bw_bs = hw_info.peak_memory_bandwidth_gbps * 1e9
 
     for idx, row in df.iterrows():
         if (idx + 1) % 100 == 0:
@@ -686,14 +814,21 @@ def _add_roofline_and_efficiency(
 
         if operator == "gemm":
             m, n, k = int(row['M']), int(row['N']), int(row['K'])
-            # Use fake tensors - zero memory, only metadata!
-            # roofline_estimate only needs shapes/dtype/device, not actual data
-            with fake_mode:
-                a = torch.empty(m, k, dtype=torch.float16, device='cuda')
-                b = torch.empty(k, n, dtype=torch.float16, device='cuda')
-                out = torch.empty(m, n, dtype=torch.float16, device='cuda')
-            result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
-            t_roofline_ms = result.t_roofline_ms
+            if dtype == "fp16":
+                # Use fake tensors with the existing roofline_estimate path.
+                with fake_mode:
+                    a = torch.empty(m, k, dtype=torch.float16, device='cuda')
+                    b = torch.empty(k, n, dtype=torch.float16, device='cuda')
+                    out = torch.empty(m, n, dtype=torch.float16, device='cuda')
+                result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
+                t_roofline_ms = result.t_roofline_ms
+            else:
+                # FP8/FP4: compute roofline directly with dtype-aware peak/bytes.
+                flop_count = 2.0 * m * n * k
+                bytes_transferred = dtype_bytes * (m * k + k * n + m * n)
+                t_compute_ms = (flop_count / peak_flop_s_dtype) * 1000.0
+                t_memory_ms = (bytes_transferred / peak_bw_bs) * 1000.0
+                t_roofline_ms = max(t_compute_ms, t_memory_ms)
 
         elif operator == "attn":
             # Updated column names: bs, seq, nh, nkv, hd
@@ -702,15 +837,28 @@ def _add_roofline_and_efficiency(
                 int(row['nh']), int(row['nkv']),
                 int(row['hd'])
             )
-            with fake_mode:
-                q = torch.empty(bs, nh, seq, hd, dtype=torch.float16, device='cuda')
-                k = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
-                v = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
-            result = roofline_estimate(
-                aten._scaled_dot_product_flash_attention,
-                (q, k, v), {}, q, hw_info, OperatorType.ATTN
-            )
-            t_roofline_ms = result.t_roofline_ms
+            if dtype == "fp16":
+                with fake_mode:
+                    q = torch.empty(bs, nh, seq, hd, dtype=torch.float16, device='cuda')
+                    k = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
+                    v = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
+                result = roofline_estimate(
+                    aten._scaled_dot_product_flash_attention,
+                    (q, k, v), {}, q, hw_info, OperatorType.ATTN
+                )
+                t_roofline_ms = result.t_roofline_ms
+            else:
+                # SDPA FLOPs ≈ 4 * B * H * S^2 * D (2 GEMMs of B,H,S,D × B,H,D,S).
+                flop_count = 4.0 * bs * nh * seq * seq * hd
+                # Memory: read Q (B,H,S,D), K/V (B,Hkv,S,D) ×2, write O (B,H,S,D).
+                bytes_transferred = dtype_bytes * (
+                    bs * nh * seq * hd
+                    + 2 * bs * nkv * seq * hd
+                    + bs * nh * seq * hd
+                )
+                t_compute_ms = (flop_count / peak_flop_s_dtype) * 1000.0
+                t_memory_ms = (bytes_transferred / peak_bw_bs) * 1000.0
+                t_roofline_ms = max(t_compute_ms, t_memory_ms)
 
         elif operator == "rmsnorm":
             seq, dim = int(row['seq']), int(row['dim'])
@@ -902,13 +1050,19 @@ def _extract_shape_features(df: "pd.DataFrame", operator: str, base_cols: list[s
     return X, feature_names
 
 
-def _extract_roofline_features(df: "pd.DataFrame", hw_info: HardwareInfo, operator: str) -> "pd.DataFrame":
+def _extract_roofline_features(
+    df: "pd.DataFrame", hw_info: HardwareInfo, operator: str, dtype: str = "fp16"
+) -> "pd.DataFrame":
     """Extract roofline envelope features for each configuration.
 
     Features include:
     - Constraint times (T_compute, T_memory)
     - Constraint ratios (T_memory / T_compute)
     - Dominant constraint (one-hot)
+
+    For FP16, uses roofline_estimate() (FP16 fake tensors). For FP8/FP4, computes
+    the constraints directly with dtype-aware peak FLOPs and bytes-per-element so
+    features are consistent with the dtype-specific efficiency target.
 
     Uses fake tensors for zero memory overhead.
     """
@@ -918,16 +1072,42 @@ def _extract_roofline_features(df: "pd.DataFrame", hw_info: HardwareInfo, operat
 
     # Create fake tensor mode - zero memory overhead!
     fake_mode = FakeTensorMode()
+    dtype_bytes = _bytes_per_element_for_dtype(dtype) if dtype != "fp16" else None
+    peak_flop_s_dtype = _peak_tflops_for_dtype(hw_info, dtype) * 1e12
+    peak_bw_bs = hw_info.peak_memory_bandwidth_gbps * 1e9
+
+    def _direct_constraints(flop_count: float, bytes_transferred: float) -> dict:
+        t_compute_ms = (flop_count / peak_flop_s_dtype) * 1000.0
+        t_memory_ms = (bytes_transferred / peak_bw_bs) * 1000.0
+        if t_compute_ms > 0:
+            constraint_ratio = t_memory_ms / t_compute_ms
+        else:
+            constraint_ratio = float("inf") if t_memory_ms > 0 else 0.0
+        is_compute_bound = 1.0 if t_compute_ms >= t_memory_ms else 0.0
+        is_memory_bound = 1.0 if t_memory_ms > t_compute_ms else 0.0
+        return dict(
+            t_compute_ms=t_compute_ms,
+            t_memory_ms=t_memory_ms,
+            constraint_ratio=constraint_ratio,
+            is_compute_bound=is_compute_bound,
+            is_memory_bound=is_memory_bound,
+        )
 
     for idx, row in df.iterrows():
         if operator == "gemm":
             m, n, k = int(row['M']), int(row['N']), int(row['K'])
-            # Use fake tensors - zero memory, only metadata!
-            with fake_mode:
-                a = torch.empty(m, k, dtype=torch.float16, device='cuda')
-                b = torch.empty(k, n, dtype=torch.float16, device='cuda')
-                out = torch.empty(m, n, dtype=torch.float16, device='cuda')
-            result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
+            if dtype == "fp16":
+                with fake_mode:
+                    a = torch.empty(m, k, dtype=torch.float16, device='cuda')
+                    b = torch.empty(k, n, dtype=torch.float16, device='cuda')
+                    out = torch.empty(m, n, dtype=torch.float16, device='cuda')
+                result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
+            else:
+                features.append(_direct_constraints(
+                    flop_count=2.0 * m * n * k,
+                    bytes_transferred=dtype_bytes * (m * k + k * n + m * n),
+                ))
+                continue
 
         elif operator == "attn":
             bs, seq, nh, nkv, hd = (
@@ -935,14 +1115,25 @@ def _extract_roofline_features(df: "pd.DataFrame", hw_info: HardwareInfo, operat
                 int(row['nh']), int(row['nkv']),
                 int(row['hd'])
             )
-            with fake_mode:
-                q = torch.empty(bs, nh, seq, hd, dtype=torch.float16, device='cuda')
-                k = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
-                v = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
-            result = roofline_estimate(
-                aten._scaled_dot_product_flash_attention,
-                (q, k, v), {}, q, hw_info, OperatorType.ATTN
-            )
+            if dtype == "fp16":
+                with fake_mode:
+                    q = torch.empty(bs, nh, seq, hd, dtype=torch.float16, device='cuda')
+                    k = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
+                    v = torch.empty(bs, nkv, seq, hd, dtype=torch.float16, device='cuda')
+                result = roofline_estimate(
+                    aten._scaled_dot_product_flash_attention,
+                    (q, k, v), {}, q, hw_info, OperatorType.ATTN
+                )
+            else:
+                features.append(_direct_constraints(
+                    flop_count=4.0 * bs * nh * seq * seq * hd,
+                    bytes_transferred=dtype_bytes * (
+                        bs * nh * seq * hd
+                        + 2 * bs * nkv * seq * hd
+                        + bs * nh * seq * hd
+                    ),
+                ))
+                continue
 
         else:  # math / rmsnorm / silu — memory-bound approximation
             # For math ops, we don't have a perfect roofline estimate, use memory-bound approximation
@@ -992,6 +1183,7 @@ def _build_training_features(
     hw_info: HardwareInfo,
     operator: str,
     base_cols: list[str],
+    dtype: str = "fp16",
 ) -> tuple[np.ndarray, list[str]]:
     """Build complete feature matrix for training (shape + roofline features).
 
@@ -1004,8 +1196,8 @@ def _build_training_features(
     # Get shape features
     X_base, base_feature_names = _extract_shape_features(df, operator, base_cols)
 
-    # Get roofline features
-    roofline_df = _extract_roofline_features(df, hw_info, operator)
+    # Get roofline features (dtype-aware: uses FP8/FP4 peaks when relevant)
+    roofline_df = _extract_roofline_features(df, hw_info, operator, dtype=dtype)
 
     # Log-scale roofline times (add 1e-10 to avoid log(0))
     roofline_features = np.column_stack([
@@ -1316,6 +1508,7 @@ def profile_operator(
     output_dir: str,
     num_runs: int = 100,
     checkpoint_interval: int = 1000,
+    dtype: str = "fp16",
 ) -> Path:
     """Profile operator and save clean data with checkpointing support.
 
@@ -1324,21 +1517,28 @@ def profile_operator(
         output_dir: Directory to save CSV data
         num_runs: Number of profiling runs per configuration
         checkpoint_interval: Save checkpoint every N configurations (default: 1000)
+        dtype: Tensor precision ("fp16", "fp8", or "fp4"). FP8/FP4 only valid for
+               GEMM and ATTN operators; rmsnorm/silu/math always use FP16.
 
     Returns:
         Path to saved CSV file
 
     Outputs:
-        - {output_dir}/{operator}_{hw_name}_data.csv: Clean profiling data
-        - {output_dir}/{operator}_{hw_name}_checkpoint.pkl: Checkpoint file (temporary)
+        - {output_dir}/{operator}_{hw_name}_{dtype}_data.csv: Clean profiling data
     """
     if not HAS_TRAINING_DEPS:
         raise ImportError("Install numpy and pandas for profiling")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA required for profiling")
+    if dtype not in ("fp16", "fp8", "fp4"):
+        raise ValueError(f"Unknown dtype '{dtype}'. Choose fp16/fp8/fp4")
+    if dtype != "fp16" and operator in ("rmsnorm", "silu", "math"):
+        raise ValueError(
+            f"Operator '{operator}' is profiled only at fp16; got dtype={dtype}"
+        )
 
     print(f"=" * 80)
-    print(f"PROFILING MODE: {operator.upper()}")
+    print(f"PROFILING MODE: {operator.upper()} (dtype={dtype})")
     print(f"=" * 80)
 
     # Auto-detect hardware
@@ -1369,9 +1569,9 @@ def profile_operator(
 
     # Profile operator grid (clean data only)
     if operator == "gemm":
-        results = _profile_gemm_grid(hw_info, grid, num_runs)
+        results = _profile_gemm_grid(hw_info, grid, num_runs, dtype=dtype)
     elif operator == "attn":
-        results = _profile_attn_grid(hw_info, grid, num_runs)
+        results = _profile_attn_grid(hw_info, grid, num_runs, dtype=dtype)
     elif operator == "rmsnorm":
         results = _profile_rmsnorm_grid(hw_info, grid, num_runs)
     elif operator == "silu":
@@ -1381,9 +1581,10 @@ def profile_operator(
     else:
         raise ValueError(f"Unknown operator: {operator}")
 
-    # Save clean data (model-agnostic)
+    # Save clean data (model-agnostic). Dtype is in the filename so each
+    # (op, dtype) combination gets its own CSV.
     df = pd.DataFrame(results)
-    csv_path = Path(output_dir) / f"{operator}_{hw_name}_data.csv"
+    csv_path = Path(output_dir) / f"{operator}_{hw_name}_{dtype}_data.csv"
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(csv_path, index=False)
 
@@ -1415,6 +1616,7 @@ def train_efficiency_model(
     output_path: str,
     backend: str = "xgboost",
     epochs: int = 300,
+    dtype: str = "fp16",
 ) -> tuple[dict, float, float]:
     """Train efficiency model from existing clean data. No profiling.
 
@@ -1424,6 +1626,8 @@ def train_efficiency_model(
         output_path: Path to save trained model (.pth)
         backend: "mlp" or "xgboost"
         epochs: Number of training epochs (MLP only)
+        dtype: Tensor precision the data was collected at ("fp16"/"fp8"/"fp4").
+               Used to pick the correct peak FLOP/s when computing roofline.
 
     Returns:
         (cv_metrics, eff_mape, time_mape)
@@ -1469,8 +1673,8 @@ def train_efficiency_model(
 
     # Auto-detect and compute roofline features on-the-fly
     if 't_roofline_ms' not in df.columns or 'efficiency' not in df.columns:
-        print("\nComputing roofline features on-the-fly...")
-        df = _add_roofline_and_efficiency(df, hw_info, operator)
+        print(f"\nComputing roofline features on-the-fly (dtype={dtype})...")
+        df = _add_roofline_and_efficiency(df, hw_info, operator, dtype=dtype)
         print(f"Added columns: t_roofline_ms, efficiency")
         print(f"Efficiency: mean={df['efficiency'].mean():.3f}, "
               f"std={df['efficiency'].std():.3f}")
@@ -1497,9 +1701,11 @@ def train_efficiency_model(
     else:
         df_train = df.copy()
 
-    # Extract enhanced features with roofline envelope
+    # Extract enhanced features with roofline envelope (dtype-aware)
     print(f"\nExtracting enhanced features (base + roofline envelope)...")
-    X, feature_order = _build_training_features(df_train, hw_info, operator, base_feature_cols)
+    X, feature_order = _build_training_features(
+        df_train, hw_info, operator, base_feature_cols, dtype=dtype
+    )
     y = df_train["efficiency"].values
 
     print(f"  Features: {len(feature_order)} total")
@@ -1520,7 +1726,9 @@ def train_efficiency_model(
 
     # Final evaluation on original (non-augmented) data
     print(f"\n--- Final Evaluation (Original Data) ---")
-    X_eval, _ = _build_training_features(df, hw_info, operator, base_feature_cols)
+    X_eval, _ = _build_training_features(
+        df, hw_info, operator, base_feature_cols, dtype=dtype
+    )
 
     if backend == "mlp":
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -1646,6 +1854,13 @@ if __name__ == "__main__":
         default=1000,
         help="Save checkpoint every N configurations during profiling (default: 1000)"
     )
+    parser.add_argument(
+        "--dtype",
+        default="fp16",
+        choices=["fp16", "fp8", "fp4"],
+        help="Tensor precision: fp16 via PyTorch, fp8 via torch._scaled_mm, "
+             "fp4 via FlashInfer mm_fp4 (NVFP4)."
+    )
 
     args = parser.parse_args()
 
@@ -1662,6 +1877,7 @@ if __name__ == "__main__":
             output_dir=output_dir,
             num_runs=args.num_runs,
             checkpoint_interval=args.checkpoint_interval,
+            dtype=args.dtype,
         )
 
     else:
@@ -1676,7 +1892,7 @@ if __name__ == "__main__":
         _, hw_name = get_hardware_info()
         output_path = Path(args.output)
         backend_suffix = "xgb" if args.backend == "xgboost" else "mlp"
-        expected_filename = f"{args.operator}_{hw_name}_{backend_suffix}.pth"
+        expected_filename = f"{args.operator}_{hw_name}_{args.dtype}_{backend_suffix}.pth"
 
         if output_path.name != expected_filename:
             print(f"\nWARNING: Output filename doesn't match expected pattern!")
@@ -1691,4 +1907,5 @@ if __name__ == "__main__":
             output_path=args.output,
             backend=args.backend,
             epochs=args.epochs,
+            dtype=args.dtype,
         )

@@ -636,7 +636,25 @@ def efficiency_estimate(
     # 1. Get model manager
     from .efficiency_models import get_backend_manager, EfficiencyFeatures
     model_manager = get_backend_manager()
-    model = model_manager.get_model(op_type)
+
+    # 1a. Derive dtype string from the operator output tensor.
+    # FP16/BF16 -> "fp16", FP8 dtypes -> "fp8". FP4 cannot be auto-detected
+    # (FlashInfer NVFP4 outputs are uint8); routing to FP4 is opt-in via
+    # SYSSIM_FORCE_DTYPE=fp4 env var.
+    dtype_str = "fp16"
+    flat_outs, _ = tree_flatten(out)
+    out_tensor_dtype = None
+    for t in flat_outs:
+        if isinstance(t, torch.Tensor):
+            out_tensor_dtype = t.dtype
+            break
+    if out_tensor_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        dtype_str = "fp8"
+    forced = os.environ.get("SYSSIM_FORCE_DTYPE")
+    if forced in ("fp16", "fp8", "fp4"):
+        dtype_str = forced
+
+    model = model_manager.get_model(op_type, dtype_str)
 
     # 2. Fallback if no model available
     if model is None:
