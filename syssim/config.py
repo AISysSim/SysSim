@@ -110,6 +110,8 @@ class HardwareInfo:
         peak_tflops_math: float,
         peak_memory_bandwidth_gbps: float,
         peak_tflops_mm_conservative: float | None = None,
+        peak_tflops_mm_fp8: float | None = None,
+        peak_tflops_mm_fp4: float | None = None,
         network: Optional[NetworkParams] = None,
     ):
         self.peak_tflops_mm = peak_tflops_mm
@@ -119,6 +121,9 @@ class HardwareInfo:
         self.peak_tflops_mm_conservative = (
             peak_tflops_mm_conservative if peak_tflops_mm_conservative is not None else peak_tflops_mm
         )
+        # Per-dtype peak tensor-unit throughput (Blackwell+: separate FP8/FP4 peaks)
+        self.peak_tflops_mm_fp8 = peak_tflops_mm_fp8
+        self.peak_tflops_mm_fp4 = peak_tflops_mm_fp4
         # Network parameters (for network simulator)
         self.network = network if network is not None else NetworkParams()
 
@@ -144,6 +149,27 @@ class HardwareInfo:
     def get_peak_memory_bandwidth_gbps(self) -> float:
         return self.peak_memory_bandwidth_gbps
 
+    def get_peak_tflops_mm_for_dtype(self, dtype) -> float:
+        """Return matrix-unit peak TFLOP/s for the given dtype.
+
+        FP8 dtypes (torch.float8_e4m3fn, torch.float8_e5m2) use peak_tflops_mm_fp8;
+        the string "nvfp4" sentinel is used for FP4 (FlashInfer NVFP4 format
+        does not have a real torch dtype). When a per-dtype peak is unset
+        (older hardware), falls back to peak_tflops_mm.
+        """
+        # FP8 (Hopper+ tensor units)
+        if dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            if self.peak_tflops_mm_fp8 is not None:
+                return self.peak_tflops_mm_fp8
+            return self.peak_tflops_mm
+        # FP4 — surfaced as sentinel string ("nvfp4") since no torch dtype exists
+        if isinstance(dtype, str) and dtype == "nvfp4":
+            if self.peak_tflops_mm_fp4 is not None:
+                return self.peak_tflops_mm_fp4
+            return self.peak_tflops_mm
+        # Default (FP16/BF16/FP32) -> primary tensor-unit peak
+        return self.peak_tflops_mm
+
 
 def get_hardware_info() -> tuple[HardwareInfo, str]:
     """Auto-detect current hardware and return HardwareInfo.
@@ -164,42 +190,49 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
     device_name = torch.cuda.get_device_name(0).lower()
 
     # Hardware specifications lookup table
-    # Format: (pattern, hw_name, peak_tflops_mm_fp16, peak_tflops_math_fp16, peak_bw_gb_s)
+    # Format: (pattern, hw_name, peak_mm_fp16, peak_math_fp16, peak_bw, peak_mm_fp8, peak_mm_fp4)
     hw_database = [
         # NVIDIA GH200 (Grace Hopper) - uses H100 GPU specs
-        ("gh200", "gh200", 989.0, 989.0, 3350.0),
-        ("grace hopper", "gh200", 989.0, 989.0, 3350.0),
+        ("gh200", "gh200", 989.0, 989.0, 3350.0, None, None),
+        ("grace hopper", "gh200", 989.0, 989.0, 3350.0, None, None),
 
         # NVIDIA H100
-        ("h100", "h100", 1979.0, 989.0, 3350.0),
+        ("h100", "h100", 1979.0, 989.0, 3350.0, None, None),
 
         # NVIDIA A100
-        ("a100", "a100", 312.0, 156.0, 1935.0),
+        ("a100", "a100", 312.0, 156.0, 1935.0, None, None),
 
         # NVIDIA V100
-        ("v100", "v100", 125.0, 62.5, 900.0),
+        ("v100", "v100", 125.0, 62.5, 900.0, None, None),
 
         # NVIDIA A40
-        ("a40", "a40", 149.0, 74.5, 696.0),
+        ("a40", "a40", 149.0, 74.5, 696.0, None, None),
 
         # NVIDIA RTX 4090
-        ("rtx 4090", "rtx4090", 330.0, 165.0, 1008.0),
-        ("geforce rtx 4090", "rtx4090", 330.0, 165.0, 1008.0),
+        ("rtx 4090", "rtx4090", 330.0, 165.0, 1008.0, None, None),
+        ("geforce rtx 4090", "rtx4090", 330.0, 165.0, 1008.0, None, None),
 
         # AMD MI250
-        ("mi250", "mi250", 362.0, 181.0, 1600.0),
+        ("mi250", "mi250", 362.0, 181.0, 1600.0, None, None),
 
         # AMD MI300
-        ("mi300", "mi300", 653.0, 326.5, 5200.0),
+        ("mi300", "mi300", 653.0, 326.5, 5200.0, None, None),
+
+        # NVIDIA RTX PRO 6000 Blackwell (GB202) - dense peak TFLOP/s
+        # FP16/BF16: 3,752 | FP8: 7,504 | FP4 (NVFP4): 15,008 | BW: 1,792 GB/s (GDDR7)
+        ("rtx pro 6000", "pro6000", 3752.0, 117.0, 1792.0, 7504.0, 15008.0),
+        ("blackwell", "pro6000", 3752.0, 117.0, 1792.0, 7504.0, 15008.0),
     ]
 
     # Check device name against known patterns
-    for pattern, hw_name, peak_mm, peak_math, peak_bw in hw_database:
+    for pattern, hw_name, peak_mm, peak_math, peak_bw, peak_fp8, peak_fp4 in hw_database:
         if pattern in device_name:
             hw_info = HardwareInfo(
                 peak_tflops_mm=peak_mm,
                 peak_tflops_math=peak_math,
                 peak_memory_bandwidth_gbps=peak_bw,
+                peak_tflops_mm_fp8=peak_fp8,
+                peak_tflops_mm_fp4=peak_fp4,
             )
             return hw_info, hw_name
 
