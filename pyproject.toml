@@ -46,7 +46,7 @@ dev = [
     "ruff",
 ]
 all = [
-    "syssim[profiler,huggingface,dev]",
+    "syssim[profiler,huggingface,megatron,dev]",
 ]
 
 [project.urls]
