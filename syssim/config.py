@@ -186,6 +186,14 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
         ("rtx 4090", "rtx4090", 330.0, 165.0, 1008.0),
         ("geforce rtx 4090", "rtx4090", 330.0, 165.0, 1008.0),
 
+        # NVIDIA Blackwell (datacenter)
+        ("b200", "b200", 4500.0, 2250.0, 8000.0),
+        ("b100", "b100", 3500.0, 1750.0, 8000.0),
+
+        # NVIDIA RTX PRO 6000 Blackwell (workstation/server edition)
+        ("rtx pro 6000 blackwell", "rtx_pro_6000_blackwell", 1006.0, 503.0, 1792.0),
+        ("rtx 6000 pro blackwell", "rtx_pro_6000_blackwell", 1006.0, 503.0, 1792.0),
+
         # AMD MI250
         ("mi250", "mi250", 362.0, 181.0, 1600.0),
 
@@ -204,9 +212,13 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
             return hw_info, hw_name
 
     # If no match found
+    known = ", ".join(sorted({entry[1] for entry in hw_database}))
     raise RuntimeError(
-        f"Unknown hardware: {device_name}. "
-        f"Please add hardware specs to get_hardware_info() in config.py"
+        f"Unknown hardware: {device_name}.\n"
+        f"  Known hardware: {known}.\n"
+        f"  To add a new GPU, append an entry to the hw_database list in "
+        f"syssim/config.py:get_hardware_info(), or instantiate HardwareInfo "
+        f"directly and skip auto-detection."
     )
 
 

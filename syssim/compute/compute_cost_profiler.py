@@ -42,8 +42,22 @@ try:
     import xgboost as xgb
     import pickle
     HAS_TRAINING_DEPS = True
-except ImportError:
+    _MISSING_TRAINING_DEP: str | None = None
+except ImportError as _e:
     HAS_TRAINING_DEPS = False
+    _MISSING_TRAINING_DEP = _e.name
+
+
+def _require_training_deps() -> None:
+    if HAS_TRAINING_DEPS:
+        return
+    raise ImportError(
+        f"Profiling/training requires pandas, scikit-learn, and xgboost "
+        f"(missing: {_MISSING_TRAINING_DEP!r}). Install with:\n"
+        f"    pip install pandas scikit-learn xgboost\n"
+        f"Or use the project's optional extras:\n"
+        f"    pip install -e '.[profiler]'"
+    )
 
 
 # ==============================================================================
@@ -1332,8 +1346,7 @@ def profile_operator(
         - {output_dir}/{operator}_{hw_name}_data.csv: Clean profiling data
         - {output_dir}/{operator}_{hw_name}_checkpoint.pkl: Checkpoint file (temporary)
     """
-    if not HAS_TRAINING_DEPS:
-        raise ImportError("Install numpy and pandas for profiling")
+    _require_training_deps()
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA required for profiling")
 
@@ -1431,8 +1444,7 @@ def train_efficiency_model(
     Raises:
         FileNotFoundError: If CSV file doesn't exist
     """
-    if not HAS_TRAINING_DEPS:
-        raise ImportError("Install numpy, pandas, sklearn, and xgboost for training")
+    _require_training_deps()
 
     if not csv_path.exists():
         raise FileNotFoundError(
