@@ -171,6 +171,23 @@ def get_num_bytes(t: torch.Tensor) -> int:
     return mem_consumed
 
 
+def _select_compute_dtype(args: tuple, out_dtypes: set[torch.dtype]) -> torch.dtype | None:
+    """Select the dtype that should determine compute peak.
+
+    Some kernels, notably CUDA flash attention, return auxiliary floating-point
+    tensors such as logsumexp in addition to the main output. The operator's
+    compute peak should follow the primary floating-point inputs instead of
+    requiring every output tensor to have the same dtype.
+    """
+    flat_args, _ = tree_flatten(args)
+    for arg in flat_args:
+        if isinstance(arg, torch.Tensor) and arg.dtype in _FLOAT_TYPES:
+            return arg.dtype
+    if out_dtypes:
+        return next(iter(out_dtypes))
+    return None
+
+
 def _is_large_tensor_core_op(func_packet, args, op_type: OperatorType) -> bool:
     """Check if operation is large enough for full tensor unit utilization.
 
@@ -273,11 +290,9 @@ def get_roofline_compute_time(
         - Time: 68.7e9 / 1979e12 × 1e9 = 34.7 μs
     """
     if func_packet in flop_registry:
-        if len(out_dtypes) != 1:
-            raise AssertionError(
-                f"Only support single out dtype got {out_dtypes} for {func_packet}"
-            )
-        dtype = out_dtypes.pop()
+        dtype = _select_compute_dtype(args, out_dtypes)
+        if dtype is None:
+            return 0.0
 
         # Determine if this is a large tensor unit operation
         is_large_op = _is_large_tensor_core_op(func_packet, args, op_type)
@@ -493,10 +508,10 @@ def roofline_estimate(
             func_packet, args, kwargs, out, out_dtypes.copy(), hw_info, op_type
         )
         if compute_ns > 0 and out_dtypes:
-            dtype = next(iter(out_dtypes))
+            dtype = _select_compute_dtype(args, out_dtypes)
             flop_count_func = flop_registry.get(func_packet)
             flop_count = flop_count_func(*args, **kwargs, out_val=out) if flop_count_func else 0
-            peak_flops = hw_info.get_peak_tflops(op_type, dtype) * 1e12
+            peak_flops = hw_info.get_peak_tflops(op_type, dtype) * 1e12 if dtype is not None else 0.0
             constraints.append(ConstraintTime(
                 work_type="math",
                 unit_level="device",

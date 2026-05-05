@@ -1,14 +1,22 @@
 __version__ = "0.1.0"
 
-from .config import ExecutionMode, HardwareInfo, SimulatorConfig, NetworkParams, get_hardware_info
+from .config import (
+    ExecutionMode, HardwareInfo, SimulatorConfig, NetworkParams,
+    get_hardware_info,
+)
 from .operator_graph import OperatorType, OperatorNode, OperatorGraph, TensorMeta
-from .api import trace_model_for_training, trace_model_for_inference, set_efficiency_model_dir
+from .api import (
+    trace_model_for_training, trace_model_for_inference, set_efficiency_model_dir,
+)
 
 # Hugging Face integration (syssim.integrations.huggingface)
 from .integrations.huggingface import (
     trace_hf_model_for_training,
     trace_hf_training_step,
 )
+
+# Diffusers integration (syssim.integrations.diffusers)
+from .integrations.diffusers import trace_diffusers_model_for_inference
 
 # Network simulator (syssim.network)
 from .network import (

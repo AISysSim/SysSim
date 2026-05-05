@@ -69,7 +69,7 @@ class TestFlopBugFix:
 
         # Calculate expected compute time manually
         expected_flops = 2 * M * N * K
-        peak_flops = hw_info.get_peak_flops(OperatorType.GEMM, torch.float32) * 1e12
+        peak_flops = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32) * 1e12
         expected_time_ns = (expected_flops / peak_flops) * 1e9
         expected_time_ms = expected_time_ns / 1e6
 
@@ -119,6 +119,32 @@ class TestFlopBugFix:
 
         print(f"✓ All dtypes use correct FLOP count")
 
+    def test_flash_attention_mixed_output_dtypes_has_compute_time(self, hw_info):
+        """Flash attention should use input dtype when auxiliary outputs differ."""
+        q = torch.empty((1, 4, 128, 64), device="meta", dtype=torch.bfloat16)
+        k = torch.empty((1, 4, 128, 64), device="meta", dtype=torch.bfloat16)
+        v = torch.empty((1, 4, 128, 64), device="meta", dtype=torch.bfloat16)
+        out = (
+            torch.empty_like(q),
+            torch.empty((1, 4, 128), device="meta", dtype=torch.float32),
+            torch.empty((2,), device="meta", dtype=torch.int64),
+            torch.empty((), device="meta", dtype=torch.int64),
+            torch.empty((0,), device="meta", dtype=torch.float32),
+        )
+
+        result = roofline_estimate(
+            aten._scaled_dot_product_flash_attention,
+            (q, k, v, 0.0, False, False),
+            {},
+            out,
+            hw_info,
+            OperatorType.ATTN,
+        )
+
+        math_constraint = next(c for c in result.constraints if c.work_type == "math")
+        assert math_constraint.work_amount > 0
+        assert math_constraint.time_ms > 0.0
+
     def test_roofline_time_doubled_after_fix(self, hw_info):
         """After fixing /2 bug, roofline compute time should be 2x what it was before."""
         M, N, K = 1024, 1024, 1024
@@ -142,7 +168,7 @@ class TestFlopBugFix:
         )
 
         # Verify compute time matches expected
-        peak_flops = hw_info.get_peak_flops(OperatorType.GEMM, torch.float32) * 1e12
+        peak_flops = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32) * 1e12
         expected_time_ms = (correct_flops / peak_flops) * 1e9 / 1e6
 
         assert abs(math_constraint.time_ms - expected_time_ms) < 1e-9, (
@@ -167,7 +193,7 @@ class TestRooflineIsAnalyticalCeiling:
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
 
         # Capacity should be exactly peak FLOP/s
-        expected_capacity = hw_info.get_peak_flops(OperatorType.GEMM, torch.float32) * 1e12
+        expected_capacity = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32) * 1e12
         assert math_constraint.capacity == expected_capacity, (
             f"Should use peak capacity {expected_capacity:.2e} FLOP/s"
         )
