@@ -17,6 +17,8 @@ class OperatorType(Enum):
     # Math/Compute
     GEMM = "gemm"
     ATTN = "attn"
+    RMSNORM = "rmsnorm"
+    SILU = "silu"
     MATH = "math"
 
     # Communication
@@ -31,7 +33,8 @@ class OperatorType(Enum):
 
 
 _MATH_TYPES = frozenset({
-    OperatorType.GEMM, OperatorType.ATTN, OperatorType.MATH,
+    OperatorType.GEMM, OperatorType.ATTN, OperatorType.RMSNORM,
+    OperatorType.SILU, OperatorType.MATH,
 })
 
 _COLLECTIVE_TYPES = frozenset({
