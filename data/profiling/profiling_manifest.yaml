@@ -1,3 +1,5 @@
 tt_bh_p150b:
   attn: attn_tt_bh_p150b_data.csv
   gemm: gemm_tt_bh_p150b_data.csv
+  rmsnorm: rmsnorm_tt_bh_p150b_data.csv
+  silu: silu_tt_bh_p150b_data.csv
