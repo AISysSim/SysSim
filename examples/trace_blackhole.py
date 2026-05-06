@@ -61,8 +61,42 @@ def _gemm_row(hw: HardwareInfo, mgr: BackendManager, m: int, n: int, k: int) -> 
 def _silu_row(hw: HardwareInfo, mgr: BackendManager, seq: int, dim: int) -> None:
     x = torch.randn(seq, dim, dtype=torch.bfloat16)
     y = torch.zeros_like(x)
-    r = roofline_estimate(aten.silu.default, (x,), {}, y, hw, OperatorType.MATH)
-    print(f"  silu  {seq:6d}x{dim:6d}                roofline={r.t_roofline_ms:.4f} ms")
+    r = roofline_estimate(aten.silu.default, (x,), {}, y, hw, OperatorType.SILU)
+    eff_str = "(no model)"
+    if mgr.get_model(OperatorType.SILU) is not None:
+        from syssim.compute.compute_cost_predictor import efficiency_estimate
+        eta = efficiency_estimate(aten.silu.default, (x,), {}, y, hw, OperatorType.SILU, r)
+        pred_ms = r.t_roofline_ms / eta if eta > 0 else r.t_roofline_ms
+        eff_str = f"(eta={eta:.3f}, est={pred_ms:.4f} ms)"
+    print(f"  silu  {seq:6d}x{dim:6d}                roofline={r.t_roofline_ms:.4f} ms  {eff_str}")
+
+
+def _rmsnorm_row(hw: HardwareInfo, mgr: BackendManager, seq: int, dim: int) -> None:
+    x = torch.randn(seq, dim, dtype=torch.bfloat16)
+    y = torch.zeros_like(x)
+    r = roofline_estimate(aten.silu.default, (x,), {}, y, hw, OperatorType.RMSNORM)
+    eff_str = "(no model)"
+    if mgr.get_model(OperatorType.RMSNORM) is not None:
+        from syssim.compute.compute_cost_predictor import efficiency_estimate
+        eta = efficiency_estimate(aten.silu.default, (x,), {}, y, hw, OperatorType.RMSNORM, r)
+        pred_ms = r.t_roofline_ms / eta if eta > 0 else r.t_roofline_ms
+        eff_str = f"(eta={eta:.3f}, est={pred_ms:.4f} ms)"
+    print(f"  rmsnorm {seq:6d}x{dim:6d}              roofline={r.t_roofline_ms:.4f} ms  {eff_str}")
+
+
+def _attn_row(hw: HardwareInfo, mgr: BackendManager, batch: int, heads: int, seq: int, head_dim: int) -> None:
+    q = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
+    k = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
+    v = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
+    out = torch.zeros_like(q)
+    r = roofline_estimate(aten.scaled_dot_product_attention.default, (q, k, v), {}, out, hw, OperatorType.ATTN)
+    eff_str = "(no model)"
+    if mgr.get_model(OperatorType.ATTN) is not None:
+        from syssim.compute.compute_cost_predictor import efficiency_estimate
+        eta = efficiency_estimate(aten.scaled_dot_product_attention.default, (q, k, v), {}, out, hw, OperatorType.ATTN, r)
+        pred_ms = r.t_roofline_ms / eta if eta > 0 else r.t_roofline_ms
+        eff_str = f"(eta={eta:.3f}, est={pred_ms:.4f} ms)"
+    print(f"  attn  b={batch} h={heads} s={seq} d={head_dim}  roofline={r.t_roofline_ms:.4f} ms  {eff_str}")
 
 
 def main() -> None:
@@ -81,6 +115,16 @@ def main() -> None:
     for m, n, k in [(1024, 1024, 1024), (4096, 4096, 4096), (8192, 8192, 8192),
                     (256, 4096, 4096), (4096, 4096, 256)]:
         _gemm_row(hw, mgr, m, n, k)
+
+    print()
+    print("=== Attention (BF16) ===")
+    for batch, heads, seq, head_dim in [(1, 8, 1024, 128), (1, 32, 4096, 128), (4, 16, 2048, 128)]:
+        _attn_row(hw, mgr, batch, heads, seq, head_dim)
+
+    print()
+    print("=== RMSNorm (BF16) ===")
+    for seq, dim in [(1024, 4096), (4096, 4096), (8192, 8192)]:
+        _rmsnorm_row(hw, mgr, seq, dim)
 
     print()
     print("=== SiLU (BF16) ===")
