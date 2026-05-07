@@ -9,6 +9,10 @@ pandas
 scikit-learn
 xgboost
 
+# ── Tenstorrent profiling (install on the TT host, not on the trainer host) ──
+# Pinned >=0.69.0: 0.65.x slim-LTO firmware objects ICE the bundled sfpi gcc.
+# ttnn>=0.69.0
+
 # ── Examples ─────────────────────────────────────────────────────────────────
 transformers
 megatron-core

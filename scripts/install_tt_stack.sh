@@ -22,7 +22,10 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -
 
 echo ""
 echo "===== Step 3: Install ttnn ====="
-pip install ttnn 2>&1 | tail -5
+# Pin >= 0.69.0: ttnn 0.65.x ships slim-LTO firmware objects that the
+# bundled sfpi gcc 15.1.0 cannot link (lto1 ICE in lto_read_decls).
+# 0.69.0 ships fat-LTO objects and links cleanly with the same toolchain.
+pip install "ttnn>=0.69.0" 2>&1 | tail -5
 echo "ttnn exit: $?"
 
 echo ""
