@@ -532,57 +532,82 @@ def roofline_estimate(
     )
 
 
+def _shape_inputs_for_op(
+    func_packet: Any,
+    args: tuple,
+    op_type: OperatorType,
+) -> list[torch.Tensor]:
+    """Return the input tensors whose shapes the trainer fed to the model.
+
+    Mirrors the ``OPERATOR_SHAPE_CONFIGS`` slicing in
+    ``compute_cost_profiler._extract_shape_features`` so inference produces
+    the same ``log_input{i}_dim{j}`` features the XGBoost model was trained
+    on. ``addmm(bias, A, B)`` is normalized to ``(A, B)`` so its features
+    line up with ``mm``.
+    """
+    if op_type == OperatorType.GEMM and func_packet is aten.addmm and len(args) >= 3:
+        return [a for a in args[1:3] if isinstance(a, torch.Tensor)]
+    if op_type == OperatorType.ATTN:
+        # Train uses (q, k, v); some attention variants pad with mask/etc., trim.
+        return [a for a in args[:3] if isinstance(a, torch.Tensor)]
+    if op_type in (OperatorType.RMSNORM, OperatorType.SILU, OperatorType.MATH):
+        return [args[0]] if args and isinstance(args[0], torch.Tensor) else []
+    # Default GEMM-like ops (mm, bmm) use first two tensor args.
+    return [a for a in args[:2] if isinstance(a, torch.Tensor)]
+
+
 def _extract_operator_params(
     func_packet: Any,
     args: tuple,
     kwargs: dict,
     op_type: OperatorType,
+    out: Any = None,
 ) -> dict[str, float]:
-    """Extract log-scaled operator parameters."""
-    params = {}
+    """Extract log-scaled tensor-shape features matching the training schema.
 
-    if op_type == OperatorType.GEMM:
-        # For matrix multiply ops, extract M, N, K
-        if func_packet == aten.mm and len(args) >= 2:
-            a, b = args[0], args[1]
-            if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-                m, k = a.shape
-                k2, n = b.shape
-                params["log_M"] = math.log(m + 1)
-                params["log_N"] = math.log(n + 1)
-                params["log_K"] = math.log(k + 1)
-
-        elif func_packet == aten.addmm and len(args) >= 3:
-            a, b = args[1], args[2]
-            if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-                m, k = a.shape
-                k2, n = b.shape
-                params["log_M"] = math.log(m + 1)
-                params["log_N"] = math.log(n + 1)
-                params["log_K"] = math.log(k + 1)
-
-        elif func_packet == aten.bmm and len(args) >= 2:
-            a, b = args[0], args[1]
-            if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-                batch, m, k = a.shape
-                _, k2, n = b.shape
-                params["log_batch"] = math.log(batch + 1)
-                params["log_M"] = math.log(m + 1)
-                params["log_N"] = math.log(n + 1)
-                params["log_K"] = math.log(k + 1)
-
-    elif op_type == OperatorType.ATTN:
-        # For attention ops, extract batch, seq_len, head_dim
-        if len(args) >= 1:
-            q = args[0]
-            if isinstance(q, torch.Tensor) and q.dim() == 4:
-                b, h, s, d = q.shape
-                params["log_batch"] = math.log(b + 1)
-                params["log_num_heads"] = math.log(h + 1)
-                params["log_seq_len"] = math.log(s + 1)
-                params["log_head_dim"] = math.log(d + 1)
-
+    Emits ``log_input{i}_dim{j}`` for each input tensor and
+    ``log_output_dim{j}`` for the output tensor, identical to
+    ``_extract_shape_features`` in the profiler.
+    """
+    params: dict[str, float] = {}
+    inputs = _shape_inputs_for_op(func_packet, args, op_type)
+    for input_idx, t in enumerate(inputs):
+        for dim_idx, dim in enumerate(t.shape):
+            params[f"log_input{input_idx}_dim{dim_idx}"] = math.log(int(dim) + 1)
+    if isinstance(out, torch.Tensor):
+        for dim_idx, dim in enumerate(out.shape):
+            params[f"log_output_dim{dim_idx}"] = math.log(int(dim) + 1)
     return params
+
+
+def _extract_roofline_features(roofline_result: "RooflineResult") -> dict[str, float]:
+    """Match ``_build_training_features`` so inference and training agree.
+
+    Produces ``log_t_compute``, ``log_t_memory``, ``log_constraint_ratio``,
+    ``is_compute_bound``, ``is_memory_bound``. Same constants the trainer
+    used (``log(t + 1e-10)``; ratio clipped to ``[1e-10, 1e10]``).
+    """
+    t_compute_ms = 0.0
+    t_memory_ms = 0.0
+    for c in roofline_result.constraints:
+        if c.work_type == "math":
+            t_compute_ms = max(t_compute_ms, c.time_ms)
+        elif c.work_type == "memory":
+            t_memory_ms = max(t_memory_ms, c.time_ms)
+    if t_compute_ms > 0:
+        ratio = t_memory_ms / t_compute_ms
+    else:
+        ratio = 1e10 if t_memory_ms > 0 else 0.0
+    ratio = min(max(ratio, 1e-10), 1e10)
+    is_compute = 1.0 if roofline_result.dominant_constraint[0] == "math" else 0.0
+    is_memory = 1.0 if roofline_result.dominant_constraint[0] == "memory" else 0.0
+    return {
+        "log_t_compute": math.log(t_compute_ms + 1e-10),
+        "log_t_memory": math.log(t_memory_ms + 1e-10),
+        "log_constraint_ratio": math.log(ratio),
+        "is_compute_bound": is_compute,
+        "is_memory_bound": is_memory,
+    }
 
 
 def _extract_hardware_params(hw_info: HardwareInfo) -> dict[str, float]:
@@ -642,8 +667,9 @@ def efficiency_estimate(
     if model is None:
         return 1.0
 
-    # 3. Extract operator parameters
-    op_params = _extract_operator_params(func_packet, args, kwargs, op_type)
+    # 3. Extract operator parameters (tensor shapes + roofline features)
+    op_params = _extract_operator_params(func_packet, args, kwargs, op_type, out)
+    op_params.update(_extract_roofline_features(roofline_result))
 
     # 4. Extract hardware descriptors
     hw_params = _extract_hardware_params(hw_info)
