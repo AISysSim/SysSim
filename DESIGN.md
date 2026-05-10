@@ -829,6 +829,28 @@ print(f"Makespan: {result.makespan * 1e3:.2f} ms")
 - Works for arbitrary topologies
 - Realistic multi-operation overlap behavior
 
+---
+
+## 6. Diffusion Model Support
+
+Diffusion support reuses the standard inference tracer. Diffusers integration
+is intentionally a component adapter: it selects an `nn.Module` from a model or
+pipeline and traces that module with `trace_model_for_inference(...,
+mode="prefill")`.
+
+Pipeline-specific behavior stays in examples. The Wan2.2 reference example
+builds a diffusers `WanPipeline` on the `meta` device, traces the UMT5 text
+encoder, high-noise transformer, low-noise transformer, and VAE decoder, then
+aggregates those stage times using the pipeline scheduler and boundary ratio.
+
+See [DIFFUSION.md](DIFFUSION.md) for:
+- Stage decomposition and aggregation math
+- Synthetic Wan2.2 input shapes
+- Self-attention and cross-attention treatment
+- Current diffusion-specific limitations
+
+---
+
 ### 5.6 LogGP Parameter Management
 
 **LogGP Parameter Loader**:

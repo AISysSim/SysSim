@@ -37,6 +37,10 @@ profiler = [
 huggingface = [
     "transformers",
 ]
+diffusers = [
+    "diffusers",
+    "transformers",
+]
 megatron = [
     "megatron-core",
 ]
@@ -46,7 +50,7 @@ dev = [
     "ruff",
 ]
 all = [
-    "syssim[profiler,huggingface,megatron,dev]",
+    "syssim[profiler,huggingface,diffusers,megatron,dev]",
 ]
 
 [project.urls]

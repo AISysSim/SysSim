@@ -1,10 +1,15 @@
-# SysSim — LLM Performance Simulator
+# SysSim — Neural Network Performance Simulator
 
 [![CI](https://github.com/AISysSim/SysSim/actions/workflows/ci.yml/badge.svg)](https://github.com/AISysSim/SysSim/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-**SysSim** is a PyTorch operator-level performance simulator that estimates neural network execution time without running actual computation. It traces model execution to build a computational graph (DAG), estimates per-operator runtime using roofline models and ML-based efficiency prediction, and computes the critical path through multi-stream execution.
+**SysSim** is a PyTorch operator-level performance simulator that estimates
+neural network execution time without running actual computation. It traces
+model execution to build a computational graph (DAG), estimates per-operator
+runtime using roofline models and ML-based efficiency prediction, and computes
+the critical path through multi-stream execution. It supports LLM
+training/inference and Wan diffusion pipeline examples.
 
 **Key use cases:**
 - Simulate model performance on hardware you don't have access to
@@ -12,7 +17,7 @@
 - Evaluate multi-stream execution and distributed training strategies
 - Optimize model architecture for target accelerators
 
-For in-depth technical architecture, see [DESIGN.md](DESIGN.md).
+For in-depth technical architecture, see [DESIGN.md](DESIGN.md). For diffusion model support, see [DIFFUSION.md](DIFFUSION.md).
 
 ---
 
@@ -41,6 +46,7 @@ pip install -e .
 # Or with optional extras
 pip install -e ".[profiler]"       # + scikit-learn, xgboost (efficiency-model training)
 pip install -e ".[huggingface]"    # + transformers
+pip install -e ".[diffusers]"      # + diffusers, transformers
 pip install -e ".[megatron]"       # + megatron-core
 pip install -e ".[dev]"            # + pytest, ruff, pytest-cov
 pip install -e ".[all]"            # everything
@@ -89,7 +95,6 @@ hw_info, hw_name = get_hardware_info()  # auto-detects GPU
 print(f"Detected: {hw_name}")
 config = SimulatorConfig(hw_info=hw_info)
 ```
-
 Supported hardware: GH200, H100, A100, V100, A40, RTX 4090, B100, B200, RTX PRO 6000 Blackwell, MI250, MI300. For unrecognized GPUs, either add an entry to `hw_database` in `syssim/config.py` or instantiate `HardwareInfo` directly.
 
 ---
@@ -128,6 +133,22 @@ python examples/huggingface/train_qwen3_8b_single.py
 ```
 
 Requires `transformers` (install via `pip install -e ".[huggingface]"` or pull in by `pip install -r requirements.txt`).
+
+### Diffusion — Wan2.2 Video Generation
+
+Simulates a Wan2.2 T2V-A14B video generation pipeline with synthetic inputs and
+no downloaded weights. The example builds a diffusers `WanPipeline` on the
+`meta` device, traces the UMT5 text encoder, high-noise and low-noise DiT
+denoisers, and VAE decoder, then aggregates the stage times for 50 denoising
+steps with classifier-free guidance:
+
+```bash
+python examples/diffusion/simulate_wan2_2.py
+```
+
+Requires the `diffusers` extra, which includes `diffusers` and `transformers`
+(install via `pip install -e ".[diffusers]"`). See [DIFFUSION.md](DIFFUSION.md)
+for the tracing and aggregation details.
 
 ### Megatron-Core — GPT-3 1.3B Tensor Parallel (TP=4)
 
@@ -192,8 +213,9 @@ SysSim/
 │   │   ├── protocol_detector.py         # Protocol/transport detection
 │   │   └── validation.py                # Network validation utilities
 │   └── integrations/
-│       └── huggingface.py               # HF Transformers training wrappers
-├── examples/                            # Usage examples (basic, HF, Megatron, configs)
+│       ├── huggingface.py               # HF Transformers training wrappers
+│       └── diffusers.py                 # HF Diffusers inference wrappers
+├── examples/                            # Usage examples (basic, HF, diffusion, Megatron, configs)
 ├── tests/                               # Test suite
 ├── data/
 │   └── profiling/                       # Profiling CSVs (GEMM, ATTN, RMSNorm)
