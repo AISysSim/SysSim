@@ -87,7 +87,9 @@ print(f"Detected: {hw_name}")
 config = SimulatorConfig(hw_info=hw_info)
 ```
 
-Supported hardware: GH200, H100, A100, V100, A40, RTX 4090, MI250, MI300.
+Supported hardware: GH200, H100, A100, V100, A40, RTX 4090, **RTX PRO 6000 (Blackwell)**, MI250, MI300. For unrecognized GPUs, either add an entry to `hw_database` in `syssim/config.py` or instantiate `HardwareInfo` directly.
+
+On Blackwell-class hardware (RTX PRO 6000), `HardwareInfo` carries per-dtype tensor-unit peaks (`peak_tflops_mm`, `peak_tflops_mm_fp8`, `peak_tflops_mm_fp4`) and the roofline picks the right one per traced operator dtype.
 
 ---
 
@@ -98,9 +100,11 @@ SysSim uses a hybrid estimation approach:
 1. **Trace** — intercepts PyTorch operations via `TorchDispatchMode` using fake CUDA tensors (no real computation)
 2. **Classify** — categorizes each operation into one of 7 types: GEMM, ATTN, MATH, COLLECTIVE, MEMORY, BARRIER, STREAM_SYNC
 3. **Estimate** — computes per-operator runtime:
-   - *Compute ops*: `T_actual = T_roofline / efficiency`, where roofline gives the analytical ceiling and an ML model predicts real-world efficiency
+   - *Compute ops*: `T_actual = T_roofline / efficiency`, where roofline gives the analytical ceiling and an ML model predicts real-world efficiency. Roofline FLOP/s and bytes-per-element are picked per-dtype, so FP8 and FP4 operators land on the correct peak.
    - *Collective ops*: event-driven network simulation with LogGP model and topology-aware bandwidth allocation
 4. **Analyze** — builds a DAG with data and stream dependencies, computes critical path across multiple CUDA streams
+
+Per-dtype efficiency models are routed by `(OperatorType, dtype)` in `BackendManager`. If a `(op, dtype)` model is missing — common for FP8 attention on consumer Blackwell today — the runtime falls back to the FP16 model rather than failing. See [docs/docs/2026-04-30-pro6000-low-precision-profiling.md](docs/docs/2026-04-30-pro6000-low-precision-profiling.md) for the end-to-end FP8/FP4 story.
 
 ---
 
@@ -146,6 +150,25 @@ python -m syssim.predictors.compute_cost_profiler \
     --epochs 300
 ```
 
+### Low-Precision Profiling — FP8 / FP4 on RTX PRO 6000
+
+Profile GEMM/attention/RMSNorm/SiLU across FP16, FP8, and FP4 on Blackwell, then train per-`(op, dtype)` XGBoost efficiency models. FP8 GEMM uses `torch._scaled_mm`, FP4 GEMM uses FlashInfer's NVFP4 path, and FP8 attention uses FlashInfer prefill (FP4 attention is not yet supported by FlashInfer 0.6 and falls back to the FP16 model at simulation time).
+
+```bash
+# Profile (~1 minute with reduced grid)
+python examples/profile_pro6000.py --num-runs 15 \
+    --gemm-samples 12 --attn-seq-samples 14 --math-samples 24
+
+# Train per-(op, dtype) XGBoost models (~2 minutes)
+python examples/train_pro6000_models.py
+
+# End-to-end: trace a model with the per-dtype efficiency models loaded
+RLSYSIM_MODEL_DIR=$(pwd)/data/trained_models \
+    python examples/trace_and_print.py
+```
+
+Requires `flashinfer-python>=0.6` and `xgboost` (both in `requirements.txt`). See [docs/docs/2026-04-30-pro6000-low-precision-profiling.md](docs/docs/2026-04-30-pro6000-low-precision-profiling.md) for the reproduction recipe, MAPE numbers, and known FP8/FP4 limitations.
+
 ---
 
 ## Repository Structure
@@ -171,10 +194,19 @@ SysSim/
 │   └── integrations/
 │       └── huggingface.py          # HF Transformers training wrappers
 ├── examples/                       # Usage examples
+│   ├── trace_and_print.py          # Basic tracing demo
+│   ├── huggingface/                # HF Transformers (Qwen3-8B)
+│   ├── megatron/                   # Megatron-Core TP example
+│   ├── configs/                    # Mesh-based hierarchical profiling configs
+│   ├── profile_pro6000.py          # FP16/FP8/FP4 profiling driver (Pro 6000)
+│   └── train_pro6000_models.py     # Per-(op, dtype) XGBoost training driver
 ├── tests/                          # Test suite (~15k lines)
 ├── data/
-│   ├── profiling/                  # Profiling CSVs
+│   ├── profiling/                  # Profiling CSVs (per-(op, hw, dtype))
 │   └── trained_models/             # Trained efficiency models
+├── docs/
+│   ├── docs/                       # Engineering reports (e.g., Pro 6000 FP8/FP4 report)
+│   └── tasks/                      # Task specs and planning docs
 ├── DESIGN.md                       # Technical design document
 ├── CONTRIBUTING.md                 # Contribution guide
 ├── CHANGELOG.md                    # Version history
