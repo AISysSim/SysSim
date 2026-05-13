@@ -1,4 +1,4 @@
-"""Tests for semantic MoE model tracing."""
+"""Tests for MoE model tracing."""
 
 from types import SimpleNamespace
 
@@ -104,7 +104,7 @@ def _build_moe_model(config_dict):
     return model
 
 
-class TestSemanticMoETracing:
+class TestMoEOperatorTracing:
     def test_fake_config_builds_stage_nodes(self, config):
         spec = extract_hf_moe_spec(_fake_config())
         runtime = MoERuntimeConfig(batch_size=1, seq_len=32)
@@ -130,9 +130,9 @@ class TestSemanticMoETracing:
 @requires_hf
 @requires_qwen3_moe
 class TestQwen3MoEIntegration:
-    """Test semantic MoE graph construction with tiny Qwen3 MoE configs."""
+    """Test MoE operator graph construction with tiny Qwen3 MoE configs."""
 
-    def test_qwen3_moe_semantic_graph_has_stage_nodes(self, config):
+    def test_qwen3_moe_graph_has_stage_nodes(self, config):
         model = _build_moe_model(SMALL_MOE_CONFIG)
         model.train()
 

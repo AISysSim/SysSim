@@ -1,6 +1,6 @@
-# Tutorial: build a semantic MoE graph
+# Tutorial: build a MoE operator graph
 
-This tutorial shows the entrypoints added by the semantic MoE support PR.
+This tutorial shows the entrypoints added by the MoE support PR.
 It follows the same path covered by the MoE tests, but uses standalone
 snippets that are easier to copy into an experiment.
 

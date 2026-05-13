@@ -263,7 +263,7 @@ The **OperatorGraph** is the intermediate representation for traced execution, c
 
 #### 3.1.1 OperatorType Enum
 
-Operator types with distinct semantics:
+Operator types with distinct roles:
 
 - **GEMM**: Matrix multiply operations (mm, addmm, bmm, matmul, linear)
 - **ATTN**: Scaled dot-product attention variants
@@ -282,12 +282,12 @@ Operator types with distinct semantics:
 - **MoE stage types**: Router, dispatch, expert, and combine are separate so
   routing overhead, memory movement, expert FFNs, and output aggregation stay
   visible in summaries and critical-path analysis.
-- **BARRIER vs STREAM_SYNC**: Different critical path semantics (global vs targeted)
+- **BARRIER vs STREAM_SYNC**: Different critical path behavior (global vs targeted)
 - **MATH**: Generic category for all other compute operations
 
-#### 3.1.2 Semantic MoE modeling
+#### 3.1.2 MoE operator graph modeling
 
-MoE support uses a semantic graph builder rather than relying only on raw
+MoE support uses a config-driven graph builder rather than relying only on raw
 PyTorch dispatch tracing. FakeTensor tracing cannot observe data-dependent
 top-k token choices, so the default routing model is deterministic uniform
 routing across experts. Callers can override this by passing explicit

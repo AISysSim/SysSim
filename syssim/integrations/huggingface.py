@@ -151,7 +151,7 @@ def trace_hf_moe_model_for_training(
     config: SimulatorConfig,
     runtime: MoERuntimeConfig | None = None,
 ) -> OperatorGraph:
-    """Build a semantic MoE graph for a Hugging Face causal LM training step."""
+    """Build a MoE operator graph for a Hugging Face causal LM training step."""
     spec = extract_hf_moe_spec(model)
     if runtime is None:
         runtime = _runtime_from_inputs(inputs, ExecutionMode.TRAINING, _model_dtype(model))
@@ -167,7 +167,7 @@ def trace_hf_moe_model_for_inference(
     mode: str = "prefill",
     runtime: MoERuntimeConfig | None = None,
 ) -> OperatorGraph:
-    """Build a semantic MoE graph for Hugging Face prefill or decode."""
+    """Build a MoE operator graph for Hugging Face prefill or decode."""
     if mode not in {"prefill", "decode"}:
         raise ValueError("mode must be 'prefill' or 'decode'")
 
@@ -225,4 +225,3 @@ def _model_dtype(model: object) -> torch.dtype | str:
     config = getattr(model, "config", None)
     dtype = getattr(config, "torch_dtype", None)
     return dtype if dtype is not None else torch.bfloat16
-

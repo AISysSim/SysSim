@@ -1,5 +1,5 @@
 """
-Simulate Qwen3-30B-A3B MoE training with semantic MoE operators using syssim.
+Simulate Qwen3-30B-A3B MoE training with explicit MoE operators using syssim.
 
 Constructs the Qwen3-30B-A3B MoE architecture from its published specs using
 the Qwen3MoeForCausalLM model class. Creates synthetic token inputs, traces a
@@ -157,7 +157,7 @@ def main():
     inputs = {"input_ids": input_ids, "labels": input_ids.clone()}
     print()
 
-    # --- Semantic MoE trace ---
+    # --- MoE operator trace ---
     sim_cfg = SimulatorConfig(hw_info=hw)
     runtime = MoERuntimeConfig(
         batch_size=args.batch_size,
@@ -166,7 +166,7 @@ def main():
         expert_parallel_size=args.expert_parallel_size,
         capacity_factor=args.capacity_factor,
     )
-    print("Building semantic MoE training graph...")
+    print("Building MoE training graph...")
     graph = trace_hf_moe_model_for_training(model, inputs, sim_cfg, runtime=runtime)
     print()
 
@@ -181,7 +181,7 @@ def main():
         if count:
             print(f"  {op_type.name:<12}: {count}")
     print()
-    print("Semantic MoE stage counts:")
+    print("MoE stage counts:")
     for op_type in (
         OperatorType.MOE_ROUTER,
         OperatorType.MOE_DISPATCH,

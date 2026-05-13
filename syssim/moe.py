@@ -1,4 +1,4 @@
-"""Semantic Mixture-of-Experts operator graph construction."""
+"""Mixture-of-Experts operator graph construction."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class MoEModelSpec:
 
 @dataclass(frozen=True)
 class MoERuntimeConfig:
-    """Runtime shape and distributed settings for semantic MoE modeling."""
+    """Runtime shape and distributed settings for MoE operator modeling."""
 
     batch_size: int
     seq_len: int
@@ -114,7 +114,7 @@ class MoERuntimeConfig:
 
 
 def extract_hf_moe_spec(model_or_config: object, name: str | None = None) -> MoEModelSpec:
-    """Extract a semantic MoE spec from a Hugging Face model or config object."""
+    """Extract a MoE spec from a Hugging Face model or config object."""
     config = getattr(model_or_config, "config", model_or_config)
     required_fields = (
         "num_hidden_layers",
@@ -159,7 +159,7 @@ def build_moe_operator_graph(
     topology: object | None = None,
     loggp: object | None = None,
 ) -> OperatorGraph:
-    """Build a semantic MoE `OperatorGraph` from config-level structure."""
+    """Build a MoE `OperatorGraph` from config-level structure."""
     if (topology is None) != (loggp is None):
         raise ValueError("topology and loggp must be supplied together")
 

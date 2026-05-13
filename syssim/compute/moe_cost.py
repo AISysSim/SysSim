@@ -1,4 +1,4 @@
-"""Roofline helpers for semantic Mixture-of-Experts modeling."""
+"""Roofline helpers for Mixture-of-Experts operator modeling."""
 
 from __future__ import annotations
 
