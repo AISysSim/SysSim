@@ -1,5 +1,6 @@
 """Convenience wrappers for Hugging Face Transformers training."""
 
+from dataclasses import replace
 from typing import Any, Callable
 import torch
 
@@ -11,7 +12,12 @@ except ImportError:
     PreTrainedModel = Any  # Type stub for when transformers not installed
 
 from ..api import trace_model_for_training
-from ..config import SimulatorConfig
+from ..config import ExecutionMode, SimulatorConfig
+from ..moe import (
+    MoERuntimeConfig,
+    build_moe_operator_graph,
+    extract_hf_moe_spec,
+)
 from ..operator_graph import OperatorGraph
 
 
@@ -139,6 +145,41 @@ def trace_hf_training_step(
     return trace_hf_model_for_training(model, batch, config)
 
 
+def trace_hf_moe_model_for_training(
+    model: object,
+    inputs: dict[str, torch.Tensor] | object,
+    config: SimulatorConfig,
+    runtime: MoERuntimeConfig | None = None,
+) -> OperatorGraph:
+    """Build a semantic MoE graph for a Hugging Face causal LM training step."""
+    spec = extract_hf_moe_spec(model)
+    if runtime is None:
+        runtime = _runtime_from_inputs(inputs, ExecutionMode.TRAINING, _model_dtype(model))
+    else:
+        runtime = replace(runtime, mode=ExecutionMode.TRAINING)
+    return build_moe_operator_graph(spec, runtime, config)
+
+
+def trace_hf_moe_model_for_inference(
+    model: object,
+    inputs: dict[str, torch.Tensor] | object,
+    config: SimulatorConfig,
+    mode: str = "prefill",
+    runtime: MoERuntimeConfig | None = None,
+) -> OperatorGraph:
+    """Build a semantic MoE graph for Hugging Face prefill or decode."""
+    if mode not in {"prefill", "decode"}:
+        raise ValueError("mode must be 'prefill' or 'decode'")
+
+    exec_mode = ExecutionMode.PREFILL if mode == "prefill" else ExecutionMode.DECODE
+    spec = extract_hf_moe_spec(model)
+    if runtime is None:
+        runtime = _runtime_from_inputs(inputs, exec_mode, _model_dtype(model))
+    else:
+        runtime = replace(runtime, mode=exec_mode)
+    return build_moe_operator_graph(spec, runtime, config)
+
+
 def _create_lm_loss_fn(input_ids: torch.Tensor) -> Callable:
     """Create language modeling loss function (shift logits/labels)."""
     def lm_loss(outputs):
@@ -155,4 +196,33 @@ def _create_lm_loss_fn(input_ids: torch.Tensor) -> Callable:
         return loss
     return lm_loss
 
+
+def _runtime_from_inputs(
+    inputs: dict[str, torch.Tensor] | object,
+    mode: ExecutionMode,
+    dtype: torch.dtype | str,
+) -> MoERuntimeConfig:
+    if hasattr(inputs, "data"):
+        inputs = dict(inputs.data)
+    if not isinstance(inputs, dict) or "input_ids" not in inputs:
+        raise ValueError("MoE runtime inference requires inputs['input_ids'] or an explicit runtime")
+
+    input_ids = inputs["input_ids"]
+    if not hasattr(input_ids, "shape") or len(input_ids.shape) < 2:
+        raise ValueError("MoE runtime inference requires inputs['input_ids'] with shape [batch, seq]")
+    return MoERuntimeConfig(
+        batch_size=int(input_ids.shape[0]),
+        seq_len=int(input_ids.shape[1]),
+        mode=mode,
+        dtype=dtype,
+    )
+
+
+def _model_dtype(model: object) -> torch.dtype | str:
+    dtype = getattr(model, "dtype", None)
+    if dtype is not None:
+        return dtype
+    config = getattr(model, "config", None)
+    dtype = getattr(config, "torch_dtype", None)
+    return dtype if dtype is not None else torch.bfloat16
 

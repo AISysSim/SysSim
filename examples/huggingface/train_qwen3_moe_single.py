@@ -1,5 +1,5 @@
 """
-Simulate Qwen3-30B-A3B single-GPU training on GH200 using syssim.
+Simulate Qwen3-30B-A3B MoE training with semantic MoE operators using syssim.
 
 Constructs the Qwen3-30B-A3B MoE architecture from its published specs using
 the Qwen3MoeForCausalLM model class. Creates synthetic token inputs, traces a
@@ -20,9 +20,10 @@ Qwen3-30B-A3B published specs (Mixture of Experts):
   - Active parameters per token: ~3B
 
 Run:
-    srun -N 1 --gpus 1 python examples/huggingface/train_qwen3_moe_single.py
+    python examples/huggingface/train_qwen3_moe_single.py --batch-size 1 --seq-len 32
 """
 
+import argparse
 import os
 import sys
 
@@ -32,7 +33,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import torch
 from transformers import AutoModelForCausalLM, Qwen3MoeConfig
 
-from syssim import SimulatorConfig, get_hardware_info, trace_hf_model_for_training
+from syssim import (
+    MoERuntimeConfig,
+    SimulatorConfig,
+    get_hardware_info,
+    trace_hf_moe_model_for_training,
+)
 from syssim.operator_graph import OperatorType
 
 # Qwen3-30B-A3B published architecture dimensions
@@ -100,7 +106,18 @@ def active_param_estimate(config_dict):
     return num_layers * per_layer + embed_params
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--seq-len", type=int, default=SEQ_LEN)
+    parser.add_argument("--expert-parallel-size", type=int, default=1)
+    parser.add_argument("--capacity-factor", type=float, default=1.0)
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     # --- Hardware ---
     hw, hw_name = get_hardware_info()
     print(f"Detected hardware: {hw_name}")
@@ -130,15 +147,27 @@ def main():
     print()
 
     # --- Synthetic inputs ---
-    print(f"Input: batch={BATCH_SIZE}, seq_len={SEQ_LEN}")
-    input_ids = torch.randint(0, QWEN3_MOE_CONFIG["vocab_size"], (BATCH_SIZE, SEQ_LEN))
+    print(f"Input: batch={args.batch_size}, seq_len={args.seq_len}")
+    print(f"Expert parallel size: {args.expert_parallel_size}")
+    input_ids = torch.randint(
+        0,
+        QWEN3_MOE_CONFIG["vocab_size"],
+        (args.batch_size, args.seq_len),
+    )
     inputs = {"input_ids": input_ids, "labels": input_ids.clone()}
     print()
 
-    # --- Trace ---
+    # --- Semantic MoE trace ---
     sim_cfg = SimulatorConfig(hw_info=hw)
-    print("Tracing training step (forward + backward)...")
-    graph = trace_hf_model_for_training(model, inputs, sim_cfg)
+    runtime = MoERuntimeConfig(
+        batch_size=args.batch_size,
+        seq_len=args.seq_len,
+        dtype=torch.bfloat16,
+        expert_parallel_size=args.expert_parallel_size,
+        capacity_factor=args.capacity_factor,
+    )
+    print("Building semantic MoE training graph...")
+    graph = trace_hf_moe_model_for_training(model, inputs, sim_cfg, runtime=runtime)
     print()
 
     # --- Report ---
@@ -151,6 +180,16 @@ def main():
         count = type_counts.get(op_type, 0)
         if count:
             print(f"  {op_type.name:<12}: {count}")
+    print()
+    print("Semantic MoE stage counts:")
+    for op_type in (
+        OperatorType.MOE_ROUTER,
+        OperatorType.MOE_DISPATCH,
+        OperatorType.MOE_EXPERT,
+        OperatorType.MOE_COMBINE,
+        OperatorType.COLLECTIVE,
+    ):
+        print(f"  {op_type.value:<18}: {type_counts.get(op_type, 0)}")
     print()
 
     critical_path_ms = graph.compute_critical_path()

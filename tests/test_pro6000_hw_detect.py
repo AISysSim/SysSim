@@ -45,3 +45,14 @@ def test_hardware_info_falls_back_to_fp16_peak_when_unset():
     assert hw.get_peak_tflops_mm_for_dtype(torch.float8_e4m3fn) == 989.0
     assert hw.get_peak_tflops_mm_for_dtype("nvfp4") == 989.0
     assert hw.get_peak_tflops_mm_for_dtype(torch.float16) == 989.0
+
+
+def test_h20_detection(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda _idx: "NVIDIA H20")
+
+    hw, hw_name = get_hardware_info()
+    assert hw_name == "h20"
+    assert hw.peak_tflops_mm == 148.0
+    assert hw.peak_memory_bandwidth_gbps == 4000.0
+    assert hw.get_peak_tflops_mm_for_dtype(torch.float8_e4m3fn) == 592.0

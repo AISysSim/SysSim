@@ -673,9 +673,8 @@ class TestOperatorTypeSTREAM_SYNC:
         assert "stream_sync: 1" in s
 
 
-@requires_cuda
 class TestAllOperatorTypesInMixedGraph:
-    """Verify all 7 operator types coexist correctly in a single graph."""
+    """Verify all operator types coexist correctly in a single graph."""
 
     def test_mixed_graph_critical_path(self):
         graph = OperatorGraph("mixed")
@@ -720,7 +719,7 @@ class TestAllOperatorTypesInMixedGraph:
         cp = graph.compute_critical_path()
         assert cp > 0.0
 
-        # All 7 types present
+        # All base types present
         types = {op.op_type for op in graph.operators.values()}
         assert types == {
             OperatorType.GEMM,
@@ -739,6 +738,10 @@ class TestAllOperatorTypesInMixedGraph:
         graph.add_operator(OperatorNode(name="c", op_type=OperatorType.MATH, estimated_time_ms=1.0))
         graph.add_operator(OperatorNode(name="co", op_type=OperatorType.COLLECTIVE, estimated_time_ms=1.0))
         graph.add_operator(OperatorNode(name="m", op_type=OperatorType.MEMORY, estimated_time_ms=1.0))
+        graph.add_operator(OperatorNode(name="mr", op_type=OperatorType.MOE_ROUTER, estimated_time_ms=1.0))
+        graph.add_operator(OperatorNode(name="md", op_type=OperatorType.MOE_DISPATCH, estimated_time_ms=1.0))
+        graph.add_operator(OperatorNode(name="me", op_type=OperatorType.MOE_EXPERT, estimated_time_ms=1.0))
+        graph.add_operator(OperatorNode(name="mc", op_type=OperatorType.MOE_COMBINE, estimated_time_ms=1.0))
         graph.add_operator(OperatorNode(name="b", op_type=OperatorType.BARRIER, estimated_time_ms=0.0))
         graph.add_operator(OperatorNode(name="s", op_type=OperatorType.STREAM_SYNC, estimated_time_ms=0.0))
         s = graph.summary()
@@ -747,5 +750,9 @@ class TestAllOperatorTypesInMixedGraph:
         assert "math: 1" in s
         assert "collective: 1" in s
         assert "memory: 1" in s
+        assert "moe_router: 1" in s
+        assert "moe_dispatch: 1" in s
+        assert "moe_expert: 1" in s
+        assert "moe_combine: 1" in s
         assert "barrier: 1" in s
         assert "stream_sync: 1" in s

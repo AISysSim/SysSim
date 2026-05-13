@@ -18,12 +18,16 @@ class OperatorType(Enum):
     GEMM = "gemm"
     ATTN = "attn"
     MATH = "math"
+    MOE_ROUTER = "moe_router"
+    MOE_EXPERT = "moe_expert"
 
     # Communication
     COLLECTIVE = "collective"
 
     # Memory
     MEMORY = "memory"
+    MOE_DISPATCH = "moe_dispatch"
+    MOE_COMBINE = "moe_combine"
 
     # Sync
     BARRIER = "barrier"
@@ -31,7 +35,11 @@ class OperatorType(Enum):
 
 
 _MATH_TYPES = frozenset({
-    OperatorType.GEMM, OperatorType.ATTN, OperatorType.MATH,
+    OperatorType.GEMM,
+    OperatorType.ATTN,
+    OperatorType.MATH,
+    OperatorType.MOE_ROUTER,
+    OperatorType.MOE_EXPERT,
 })
 
 _COLLECTIVE_TYPES = frozenset({
@@ -40,6 +48,8 @@ _COLLECTIVE_TYPES = frozenset({
 
 _MEMORY_TYPES = frozenset({
     OperatorType.MEMORY,
+    OperatorType.MOE_DISPATCH,
+    OperatorType.MOE_COMBINE,
 })
 
 _SYNC_TYPES = frozenset({

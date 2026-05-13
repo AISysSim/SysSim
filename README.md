@@ -87,7 +87,7 @@ print(f"Detected: {hw_name}")
 config = SimulatorConfig(hw_info=hw_info)
 ```
 
-Supported hardware: GH200, H100, A100, V100, A40, RTX 4090, MI250, MI300.
+Supported hardware: GH200, H100, H20, A100, V100, A40, RTX 4090, MI250, MI300.
 
 ---
 
@@ -96,7 +96,7 @@ Supported hardware: GH200, H100, A100, V100, A40, RTX 4090, MI250, MI300.
 SysSim uses a hybrid estimation approach:
 
 1. **Trace** — intercepts PyTorch operations via `TorchDispatchMode` using fake CUDA tensors (no real computation)
-2. **Classify** — categorizes each operation into one of 7 types: GEMM, ATTN, MATH, COLLECTIVE, MEMORY, BARRIER, STREAM_SYNC
+2. **Classify** — categorizes each operation into semantic types: GEMM, ATTN, MATH, COLLECTIVE, MEMORY, MoE stages, BARRIER, STREAM_SYNC
 3. **Estimate** — computes per-operator runtime:
    - *Compute ops*: `T_actual = T_roofline / efficiency`, where roofline gives the analytical ceiling and an ML model predicts real-world efficiency
    - *Collective ops*: event-driven network simulation with LogGP model and topology-aware bandwidth allocation
@@ -122,6 +122,18 @@ Traces a full Qwen3-8B training step (forward + backward) on a single GH200. Use
 
 ```bash
 python examples/huggingface/train_qwen3_8b_single.py
+```
+
+### Hugging Face — Qwen3 MoE
+
+Builds a first-class semantic MoE graph for Qwen3-30B-A3B with explicit
+`moe_router`, `moe_dispatch`, `moe_expert`, and `moe_combine` nodes. The
+expert-parallel path can also insert two `collective` all-to-all nodes per sparse
+layer using the memory roofline model by default.
+
+```bash
+python examples/huggingface/train_qwen3_moe_single.py --batch-size 1 --seq-len 32
+python examples/huggingface/train_qwen3_moe_single.py --batch-size 1 --seq-len 32 --expert-parallel-size 2
 ```
 
 ### Megatron-Core — GPT-3 1.3B Tensor Parallel (TP=4)

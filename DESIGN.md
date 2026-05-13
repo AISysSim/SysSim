@@ -263,22 +263,62 @@ The **OperatorGraph** is the intermediate representation for traced execution, c
 
 #### 3.1.1 OperatorType Enum
 
-Seven operator types with distinct semantics:
+Operator types with distinct semantics:
 
 - **GEMM**: Matrix multiply operations (mm, addmm, bmm, matmul, linear)
 - **ATTN**: Scaled dot-product attention variants
 - **MATH**: Generic math operations (layernorm, relu, softmax, etc.)
 - **COLLECTIVE**: Distributed operations (all_reduce, all_gather, etc.)
 - **MEMORY**: Data transfers (host↔device, device↔device)
+- **MOE_ROUTER**: MoE gate projection plus top-k routing score selection
+- **MOE_DISPATCH**: Routed token gather/scatter into expert-local batches
+- **MOE_EXPERT**: Active expert FFN work for routed tokens
+- **MOE_COMBINE**: Weighted combine of expert outputs back to token order
 - **BARRIER**: Wait for ALL streams (global synchronization)
 - **STREAM_SYNC**: Wait for specific stream (targeted synchronization)
 
 **Design decisions**:
 - **GEMM vs ATTN**: Separate types because modern GPUs have different peak FLOP rates for these operations
+- **MoE stage types**: Router, dispatch, expert, and combine are separate so
+  routing overhead, memory movement, expert FFNs, and output aggregation stay
+  visible in summaries and critical-path analysis.
 - **BARRIER vs STREAM_SYNC**: Different critical path semantics (global vs targeted)
 - **MATH**: Generic category for all other compute operations
 
-#### 3.1.2 OperatorNode
+#### 3.1.2 Semantic MoE modeling
+
+MoE support uses a semantic graph builder rather than relying only on raw
+PyTorch dispatch tracing. FakeTensor tracing cannot observe data-dependent
+top-k token choices, so the default routing model is deterministic uniform
+routing across experts. Callers can override this by passing explicit
+`tokens_per_expert`, whose sum must equal `batch_size * seq_len * top_k`.
+
+Each sparse layer emits this dependency chain:
+
+```text
+moe_router -> moe_dispatch -> moe_expert -> moe_combine
+```
+
+The router cost is gate GEMM plus top-k math. Dispatch and combine use memory
+roofline movement for routed token activations, with combine adding a small
+weighted-sum math term. Expert cost models the active SwiGLU FFN as two GEMM
+stages (`hidden -> 2 * moe_intermediate` and `moe_intermediate -> hidden`) plus
+activation math. Training mode multiplies stage costs to account for forward,
+backward-data, and backward-weight work; prefill/decode use the forward estimate.
+
+When `expert_parallel_size > 1`, SysSim inserts `collective` all-to-all nodes
+around the expert stage:
+
+```text
+moe_dispatch -> alltoall_dispatch -> moe_expert -> alltoall_combine -> moe_combine
+```
+
+If a network `Topology` and `LogGPParams` are supplied, the collective estimate
+uses `syssim.network.alltoall(...)` plus `syssim.network.simulate(...)`. Without
+explicit topology/loggp inputs, it falls back to a memory-roofline estimate and
+marks node config with `network_model="memory_roofline"`.
+
+#### 3.1.3 OperatorNode
 
 Each node represents a single operator in the execution graph with:
 
@@ -288,7 +328,7 @@ Each node represents a single operator in the execution graph with:
 - **Performance**: Estimated execution time, operator-specific configuration
 - **Timing**: Earliest start/finish times (computed during critical path analysis)
 
-#### 3.1.3 Critical Path Algorithm
+#### 3.1.4 Critical Path Algorithm
 
 Computes total execution time accounting for multi-stream parallelism:
 

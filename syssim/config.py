@@ -199,6 +199,9 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
         # NVIDIA H100
         ("h100", "h100", 1979.0, 989.0, 3350.0, None, None),
 
+        # NVIDIA H20 (Hopper, China data-center SKU)
+        ("h20", "h20", 148.0, 26.1, 4000.0, 592.0, None),
+
         # NVIDIA A100
         ("a100", "a100", 312.0, 156.0, 1935.0, None, None),
 
