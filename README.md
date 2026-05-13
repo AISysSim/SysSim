@@ -131,6 +131,17 @@ Builds a first-class semantic MoE graph for Qwen3-30B-A3B with explicit
 expert-parallel path can also insert two `collective` all-to-all nodes per sparse
 layer using the memory roofline model by default.
 
+**Entrypoint for semantic MoE support:** start with
+[`docs/docs/moe-semantic-graph-tutorial.md`](docs/docs/moe-semantic-graph-tutorial.md)
+for the tutorial, use
+[`examples/huggingface/train_qwen3_moe_single.py`](examples/huggingface/train_qwen3_moe_single.py)
+for an executable Qwen3 MoE run, and call
+`build_moe_operator_graph(...)` or `trace_hf_moe_model_for_training(...)`
+from Python code. The corresponding reference tests are
+[`tests/test_moe_graph.py`](tests/test_moe_graph.py),
+[`tests/test_moe_hf_spec.py`](tests/test_moe_hf_spec.py), and
+[`tests/test_moe_tracing.py`](tests/test_moe_tracing.py).
+
 ```bash
 python examples/huggingface/train_qwen3_moe_single.py --batch-size 1 --seq-len 32
 python examples/huggingface/train_qwen3_moe_single.py --batch-size 1 --seq-len 32 --expert-parallel-size 2
