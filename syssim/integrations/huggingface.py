@@ -1,6 +1,6 @@
 """Convenience wrappers for Hugging Face Transformers training."""
 
-from typing import Any, Callable
+from typing import Any, Callable, Optional, Union, Dict
 import torch
 
 try:
@@ -17,10 +17,10 @@ from ..operator_graph import OperatorGraph
 
 def trace_hf_model_for_training(
     model: PreTrainedModel,
-    inputs: dict[str, torch.Tensor] | Any,
+    inputs: Union[Dict[str, torch.Tensor], Any],
     config: SimulatorConfig,
-    loss_fn: Callable | None = None,
-    labels: torch.Tensor | None = None,
+    loss_fn: Optional[Callable] = None,
+    labels: Optional[torch.Tensor] = None,
 ) -> OperatorGraph:
     """Trace a Hugging Face model for training (forward + backward).
 

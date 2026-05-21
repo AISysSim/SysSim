@@ -392,6 +392,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         hw_info: Any = None,
         execution_mode: Optional[ExecutionMode] = None,
         cache_seq_len: int = 0,
+        plena_estimator: Any = None,
     ) -> None:
         super().__init__()
         self._graph = graph
@@ -401,6 +402,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         self._hw_info = hw_info
         self._execution_mode = execution_mode
         self._cache_seq_len = cache_seq_len
+        self._plena_estimator = plena_estimator
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
@@ -486,13 +488,14 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
 
         # 7. Estimate time using predictor (decoupled)
         estimated_time_ms = 0.0
-        if self._hw_info is not None and func_packet not in _IGNORE_OPS:
+        if (self._hw_info is not None or self._plena_estimator is not None) and func_packet not in _IGNORE_OPS:
             try:
                 from .compute.compute_cost_predictor import estimate_runtime
                 estimated_time_ms = estimate_runtime(
                     func_packet, args, kwargs, out, self._hw_info, op_type,
                     execution_mode=self._execution_mode,
                     cache_seq_len=self._cache_seq_len,
+                    plena_estimator=self._plena_estimator,
                 )
             except Exception as e:
                 log.debug(f"Runtime estimation failed for {packet_name}: {e}")
@@ -607,10 +610,12 @@ class OperatorGraphTracer:
         hw_info: Any = None,
         execution_mode: Optional[ExecutionMode] = None,
         cache_seq_len: int = 0,
+        plena_estimator: Any = None,
     ) -> None:
         self._hw_info = hw_info
         self._execution_mode = execution_mode
         self._cache_seq_len = cache_seq_len
+        self._plena_estimator = plena_estimator
 
     def trace(
         self,
@@ -642,6 +647,7 @@ class OperatorGraphTracer:
             hw_info=self._hw_info,
             execution_mode=self._execution_mode,
             cache_seq_len=self._cache_seq_len,
+            plena_estimator=self._plena_estimator,
         )
 
         if loss_fn is None:
