@@ -2,14 +2,8 @@ from .config import ExecutionMode, HardwareInfo, SimulatorConfig, NetworkParams,
 from .operator_graph import OperatorType, OperatorNode, OperatorGraph, TensorMeta
 from .api import trace_model_for_training, trace_model_for_inference, set_efficiency_model_dir, trace_model_for_plena
 
-# PLENA integration (syssim.config_plena, syssim.integrations.plena)
+# PLENA integration (Op-Level via syssim.config_plena)
 from .config_plena import PLENAConfig, is_plena_hardware
-from .integrations.plena import (
-    PLENAModelConfig,
-    PLENAInferenceResult,
-    estimate_plena_inference,
-    trace_hf_model_for_plena,
-)
 
 # Hugging Face integration (syssim.integrations.huggingface)
 from .integrations.huggingface import (
