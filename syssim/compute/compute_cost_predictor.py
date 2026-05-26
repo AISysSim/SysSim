@@ -696,6 +696,7 @@ def estimate_runtime(
     op_type: OperatorType,
     execution_mode: ExecutionMode | None = None,
     cache_seq_len: int = 0,
+    plena_estimator: Any = None,
 ) -> float:
     """Estimate runtime using hybrid roofline + efficiency model.
 
@@ -708,10 +709,18 @@ def estimate_runtime(
         op_type: The OperatorType
         execution_mode: Optional execution mode
         cache_seq_len: KV cache sequence length
+        plena_estimator: Optional PLENAEstimator for PLENA backend path
 
     Returns:
         Estimated runtime in milliseconds.
     """
+    # PLENA backend path: use cycle-level estimation if PLENAEstimator provided
+    if plena_estimator is not None:
+        return plena_estimator.estimate_runtime(
+            func_packet, args, kwargs, out, op_type,
+            execution_mode, cache_seq_len
+        )
+
     # Compute multi-dimensional roofline
     roofline_result = roofline_estimate(
         func_packet, args, kwargs, out, hw_info, op_type,
