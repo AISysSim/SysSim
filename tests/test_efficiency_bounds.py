@@ -6,18 +6,18 @@ Verifies:
 3. MLP predictions stay bounded in [0, 1]
 """
 
-import torch
-import numpy as np
-import pytest
 from pathlib import Path
 
-from syssim.config import HardwareInfo
-from syssim.operator_graph import OperatorType
+import numpy as np
+import pytest
+import torch
+
 from syssim.compute.compute_cost_predictor import (
     _is_large_tensor_core_op,
     aten,
-    LARGE_GEMM_THRESHOLD,
 )
+from syssim.config import HardwareInfo
+from syssim.operator_graph import OperatorType
 
 
 class TestPeakSelection:
@@ -32,7 +32,7 @@ class TestPeakSelection:
         b = torch.randn(8192, 2048, dtype=torch.float16)
 
         is_large = _is_large_tensor_core_op(aten.mm, (a, b), OperatorType.GEMM)
-        assert is_large == True, "2048x8192 GEMM should be classified as large"
+        assert is_large, "2048x8192 GEMM should be classified as large"
 
         peak = hw.get_peak_tflops(OperatorType.GEMM, torch.float16, is_large)
         assert peak == 1979.0, f"Expected peak 1979, got {peak}"
@@ -46,26 +46,26 @@ class TestPeakSelection:
         b = torch.randn(64, 64, dtype=torch.float16)
 
         is_large = _is_large_tensor_core_op(aten.mm, (a, b), OperatorType.GEMM)
-        assert is_large == False, "64x64 GEMM should be classified as small"
+        assert not is_large, "64x64 GEMM should be classified as small"
 
         peak = hw.get_peak_tflops(OperatorType.GEMM, torch.float16, is_large)
         assert peak == 535.0, f"Expected conservative peak 535, got {peak}"
 
     def test_threshold_boundary(self):
         """Test behavior at threshold boundary (512)."""
-        hw = HardwareInfo(1979.0, 33.5, 4900.0, peak_tflops_mm_conservative=535.0)
+        HardwareInfo(1979.0, 33.5, 4900.0, peak_tflops_mm_conservative=535.0)
 
         # Exactly at threshold: 512 x 512 x 512 (should be large)
         a = torch.randn(512, 512, dtype=torch.float16)
         b = torch.randn(512, 512, dtype=torch.float16)
         is_large = _is_large_tensor_core_op(aten.mm, (a, b), OperatorType.GEMM)
-        assert is_large == True, "512x512 GEMM should be classified as large"
+        assert is_large, "512x512 GEMM should be classified as large"
 
         # Just below threshold: 511 x 512 x 512 (should be small)
         a = torch.randn(511, 512, dtype=torch.float16)
         b = torch.randn(512, 512, dtype=torch.float16)
         is_large = _is_large_tensor_core_op(aten.mm, (a, b), OperatorType.GEMM)
-        assert is_large == False, "511x512 GEMM should be classified as small"
+        assert not is_large, "511x512 GEMM should be classified as small"
 
     def test_addmm_classification(self):
         """Test addmm operator classification."""
@@ -74,14 +74,14 @@ class TestPeakSelection:
         a = torch.randn(1024, 4096, dtype=torch.float16)
         b = torch.randn(4096, 2048, dtype=torch.float16)
         is_large = _is_large_tensor_core_op(aten.addmm, (bias, a, b), OperatorType.GEMM)
-        assert is_large == True
+        assert is_large
 
         # Small addmm
         bias = torch.randn(64, 128, dtype=torch.float16)
         a = torch.randn(64, 256, dtype=torch.float16)
         b = torch.randn(256, 128, dtype=torch.float16)
         is_large = _is_large_tensor_core_op(aten.addmm, (bias, a, b), OperatorType.GEMM)
-        assert is_large == False
+        assert not is_large
 
     def test_bmm_classification(self):
         """Test batched matmul classification."""
@@ -89,13 +89,13 @@ class TestPeakSelection:
         a = torch.randn(16, 1024, 2048, dtype=torch.float16)
         b = torch.randn(16, 2048, 1024, dtype=torch.float16)
         is_large = _is_large_tensor_core_op(aten.bmm, (a, b), OperatorType.GEMM)
-        assert is_large == True
+        assert is_large
 
         # Small bmm
         a = torch.randn(16, 64, 128, dtype=torch.float16)
         b = torch.randn(16, 128, 64, dtype=torch.float16)
         is_large = _is_large_tensor_core_op(aten.bmm, (a, b), OperatorType.GEMM)
-        assert is_large == False
+        assert not is_large
 
     def test_backward_compatibility(self):
         """HardwareInfo without conservative peak should use same peak for both."""
@@ -229,18 +229,14 @@ class TestOperatorTypeClassification:
         # Large attention (batch*heads*seq ≥ 4096, seq ≥ 512)
         q = torch.randn(2, 8, 1024, 64, dtype=torch.float16)  # b=2, h=8, s=1024, d=64
         # batch * heads * seq = 2 * 8 * 1024 = 16384 ≥ 4096, seq=1024 ≥ 512
-        is_large = _is_large_tensor_core_op(
-            aten._scaled_dot_product_flash_attention, (q,), OperatorType.ATTN
-        )
-        assert is_large == True
+        is_large = _is_large_tensor_core_op(aten._scaled_dot_product_flash_attention, (q,), OperatorType.ATTN)
+        assert is_large
 
         # Small attention (seq < 512)
         q = torch.randn(16, 8, 256, 64, dtype=torch.float16)  # b=16, h=8, s=256, d=64
         # batch * heads * seq = 16 * 8 * 256 = 32768 ≥ 4096, but seq=256 < 512
-        is_large = _is_large_tensor_core_op(
-            aten._scaled_dot_product_flash_attention, (q,), OperatorType.ATTN
-        )
-        assert is_large == False
+        is_large = _is_large_tensor_core_op(aten._scaled_dot_product_flash_attention, (q,), OperatorType.ATTN)
+        assert not is_large
 
 
 if __name__ == "__main__":

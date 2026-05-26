@@ -26,13 +26,13 @@ Design choices:
 - Use op indices (not Op objects) as keys to avoid hashability issues
 """
 
-from dataclasses import dataclass
 import heapq
+from dataclasses import dataclass
 from typing import Optional
-from .topology import Topology, Resource
-from .loggp import LogGPParams
-from .dag_builder import Op
 
+from .dag_builder import Op
+from .loggp import LogGPParams
+from .topology import Resource, Topology
 
 # Tolerance for floating-point comparisons (1 nanosecond)
 FLOAT_TOL = 1e-9
@@ -52,6 +52,7 @@ class SimulationResult:
         >>> print(f"Total time: {result.makespan * 1e3:.2f} ms")
         >>> print(f"Rank 0 finished at: {result.per_rank_finish[0] * 1e3:.2f} ms")
     """
+
     ops: list[Op]
     makespan: float  # seconds
     per_rank_finish: dict[int, float]  # rank -> finish time (seconds)
@@ -98,7 +99,7 @@ def simulate(
 
     # Populate layer-specific LogGP for HierarchicalTopology
     # Check if topology has get_loggp method (duck typing)
-    has_layer_loggp = hasattr(topology, 'get_loggp') and callable(getattr(topology, 'get_loggp'))
+    has_layer_loggp = hasattr(topology, "get_loggp") and callable(getattr(topology, "get_loggp"))
 
     if has_layer_loggp:
         for op in ops:
@@ -187,10 +188,10 @@ def simulate(
 
             if not path:
                 # Zero-byte transfer (src == dst), complete instantly
-                op_bandwidth[op_idx] = float('inf')
+                op_bandwidth[op_idx] = float("inf")
             else:
                 # Effective bandwidth = min(B_r / n_r) across path
-                min_bw = float('inf')
+                min_bw = float("inf")
                 for res in path:
                     n_r = resource_usage[res.name]
                     effective_bw = res.bandwidth / n_r
@@ -198,7 +199,7 @@ def simulate(
                 op_bandwidth[op_idx] = min_bw
 
         # Compute time to next event
-        time_to_completion = float('inf')
+        time_to_completion = float("inf")
 
         for op_idx in active:
             op = ops[op_idx]
@@ -208,7 +209,7 @@ def simulate(
                 break
 
             bw = op_bandwidth[op_idx]
-            if bw == float('inf'):
+            if bw == float("inf"):
                 # Infinite bandwidth (e.g., self-send), completes instantly
                 time_to_completion = 0.0
                 break
@@ -217,14 +218,14 @@ def simulate(
                 time_to_completion = min(time_to_completion, time_to_drain)
 
         # Time to next injection
-        time_to_injection = float('inf')
+        time_to_injection = float("inf")
         if eligible:
             next_inject_time = eligible[0][0]
             time_to_injection = max(0.0, next_inject_time - current_time)
 
         # Advance time
         dt = min(time_to_completion, time_to_injection)
-        if dt == float('inf'):
+        if dt == float("inf"):
             # Should not happen if we have active ops
             raise RuntimeError("Simulation stuck: active ops but no progress possible")
 
@@ -242,7 +243,7 @@ def simulate(
 
             bw = op_bandwidth[op_idx]
 
-            if bw == float('inf'):
+            if bw == float("inf"):
                 # Infinite bandwidth, complete instantly
                 op.remaining_bytes = 0.0
                 completed.append(op_idx)

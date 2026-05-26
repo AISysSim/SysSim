@@ -18,13 +18,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from torch.utils._pytree import tree_flatten
 from torch.utils._ordered_set import OrderedSet
+from torch.utils._pytree import tree_flatten
 
-from ..operator_graph import OperatorType
 from ..config import ExecutionMode, HardwareInfo
+from ..operator_graph import OperatorType
 from .flop_counter import flop_registry, sdpa_flop_count
-
 
 # ============================================================================
 # Unit Conversion Constants
@@ -32,24 +31,22 @@ from .flop_counter import flop_registry, sdpa_flop_count
 # These constants ensure correct dimensional analysis throughout the codebase.
 # Always use these instead of magic numbers to make units explicit.
 
-TERA_TO_UNIT = 1e12          # 1 TFLOP = 10^12 FLOP (tera = trillion)
-GIGA_TO_UNIT = 1e9           # 1 GB = 10^9 bytes (giga = billion)
-PETA_TO_TERA = 1000.0        # 1 PFLOP = 1000 TFLOP (peta = quadrillion)
-SECONDS_TO_NS = 1e9          # 1 second = 10^9 nanoseconds
-NS_TO_MS = 1e6               # 1 millisecond = 10^6 nanoseconds
+TERA_TO_UNIT = 1e12  # 1 TFLOP = 10^12 FLOP (tera = trillion)
+GIGA_TO_UNIT = 1e9  # 1 GB = 10^9 bytes (giga = billion)
+PETA_TO_TERA = 1000.0  # 1 PFLOP = 1000 TFLOP (peta = quadrillion)
+SECONDS_TO_NS = 1e9  # 1 second = 10^9 nanoseconds
+NS_TO_MS = 1e6  # 1 millisecond = 10^6 nanoseconds
 
 # Common combined conversions
-TFLOPS_TO_FLOPS = TERA_TO_UNIT    # Alias for clarity
-GBPS_TO_BPS = GIGA_TO_UNIT        # Alias for clarity
+TFLOPS_TO_FLOPS = TERA_TO_UNIT  # Alias for clarity
+GBPS_TO_BPS = GIGA_TO_UNIT  # Alias for clarity
 
 # Threshold for large tensor unit operations
 # Operations with all dimensions ≥ this threshold use tensor unit peak
 # Smaller operations use conservative peak due to launch overhead
 LARGE_GEMM_THRESHOLD = 512
 
-_PYTORCH_MIN_ALLOCATE = (
-    2**9 if int(os.environ.get("PYTORCH_NO_CUDA_MEMORY_CACHING", 0)) == 0 else 1
-)
+_PYTORCH_MIN_ALLOCATE = 2**9 if int(os.environ.get("PYTORCH_NO_CUDA_MEMORY_CACHING", 0)) == 0 else 1
 
 aten = torch.ops.aten
 
@@ -126,19 +123,22 @@ _GEMM_OPS = OrderedSet(
     ]
 )
 
-_ATTN_OPS = frozenset({
-    aten._scaled_dot_product_efficient_attention,
-    aten._scaled_dot_product_flash_attention,
-    aten._scaled_dot_product_flash_attention_for_cpu,
-    aten._scaled_dot_product_cudnn_attention,
-    aten._flash_attention_forward,
-    aten._efficient_attention_forward,
-})
+_ATTN_OPS = frozenset(
+    {
+        aten._scaled_dot_product_efficient_attention,
+        aten._scaled_dot_product_flash_attention,
+        aten._scaled_dot_product_flash_attention_for_cpu,
+        aten._scaled_dot_product_cudnn_attention,
+        aten._flash_attention_forward,
+        aten._efficient_attention_forward,
+    }
+)
 
 
 @dataclass
 class ConstraintTime:
     """Single roofline constraint."""
+
     work_type: str  # "math", "memory"
     unit_level: str  # "device"
     time_ms: float
@@ -149,6 +149,7 @@ class ConstraintTime:
 @dataclass
 class RooflineResult:
     """Multi-dimensional roofline result."""
+
     t_roofline_ms: float  # max of all constraints
     constraints: list[ConstraintTime]
     dominant_constraint: tuple[str, str]  # (work_type, unit_level)
@@ -157,17 +158,12 @@ class RooflineResult:
         """Return r_{k,l} = T_{k,l} / T_roofline for all constraints."""
         if self.t_roofline_ms == 0:
             return {(c.work_type, c.unit_level): 0.0 for c in self.constraints}
-        return {
-            (c.work_type, c.unit_level): c.time_ms / self.t_roofline_ms
-            for c in self.constraints
-        }
+        return {(c.work_type, c.unit_level): c.time_ms / self.t_roofline_ms for c in self.constraints}
 
 
 def get_num_bytes(t: torch.Tensor) -> int:
     num_bytes = t.untyped_storage().nbytes()
-    mem_consumed = (
-        math.ceil(num_bytes / _PYTORCH_MIN_ALLOCATE) * _PYTORCH_MIN_ALLOCATE
-    )
+    mem_consumed = math.ceil(num_bytes / _PYTORCH_MIN_ALLOCATE) * _PYTORCH_MIN_ALLOCATE
     return mem_consumed
 
 
@@ -308,9 +304,7 @@ def get_roofline_compute_time(
     return 0.0
 
 
-def get_roofline_transfer_time(
-    flat_args_kwargs, flat_outs, hw_info: HardwareInfo
-) -> float:
+def get_roofline_transfer_time(flat_args_kwargs, flat_outs, hw_info: HardwareInfo) -> float:
     """Estimate memory-bound roofline time for an operator.
 
     Calculates the minimum time required to transfer input and output data
@@ -338,19 +332,17 @@ def get_roofline_transfer_time(
         - Peak BW: 3350 GB/s = 3.35e12 bytes/s
         - Time: 24,576 / 3350 = 7.34 ns
     """
-    read_bytes = sum(
-        get_num_bytes(t) for t in flat_args_kwargs if isinstance(t, torch.Tensor)
-    )
-    write_bytes = sum(
-        get_num_bytes(t) for t in flat_outs if isinstance(t, torch.Tensor)
-    )
+    read_bytes = sum(get_num_bytes(t) for t in flat_args_kwargs if isinstance(t, torch.Tensor))
+    write_bytes = sum(get_num_bytes(t) for t in flat_outs if isinstance(t, torch.Tensor))
     counted_bytes = read_bytes + write_bytes
     transfer_time_ns = counted_bytes / hw_info.get_peak_memory_bandwidth_gbps()
     return transfer_time_ns
 
 
 def _decode_attention_compute_ns(
-    args: tuple, hw_info: HardwareInfo, cache_seq_len: int,
+    args: tuple,
+    hw_info: HardwareInfo,
+    cache_seq_len: int,
 ) -> float:
     """Estimate compute time for decode attention with KV cache override.
 
@@ -373,7 +365,9 @@ def _decode_attention_compute_ns(
 
 
 def _decode_attention_transfer_ns(
-    args: tuple, hw_info: HardwareInfo, cache_seq_len: int,
+    args: tuple,
+    hw_info: HardwareInfo,
+    cache_seq_len: int,
 ) -> float:
     """Estimate memory transfer time for decode attention with KV cache.
 
@@ -396,7 +390,7 @@ def _decode_attention_transfer_ns(
     if bw == 0:
         return 0.0
     return total_bytes / bw
-    
+
 
 def roofline_estimate(
     func_packet: Any,
@@ -450,11 +444,7 @@ def roofline_estimate(
     constraints = []
 
     # Decode attention: override FLOPs and memory with KV cache-aware estimates
-    if (
-        execution_mode == ExecutionMode.DECODE
-        and op_type == OperatorType.ATTN
-        and cache_seq_len > 0
-    ):
+    if execution_mode == ExecutionMode.DECODE and op_type == OperatorType.ATTN and cache_seq_len > 0:
         compute_ns = _decode_attention_compute_ns(args, hw_info, cache_seq_len)
         transfer_ns = _decode_attention_transfer_ns(args, hw_info, cache_seq_len)
 
@@ -477,60 +467,65 @@ def roofline_estimate(
             total_bytes = 0
 
         # Build constraint list
-        peak_flops = hw_info.get_peak_tflops(op_type, args[0].dtype if isinstance(args[0], torch.Tensor) else torch.float32) * 1e12
-        constraints.append(ConstraintTime(
-            work_type="math",
-            unit_level="device",
-            time_ms=compute_ns / 1e6,
-            work_amount=flop_count,
-            capacity=peak_flops,
-        ))
-        constraints.append(ConstraintTime(
-            work_type="memory",
-            unit_level="device",
-            time_ms=transfer_ns / 1e6,
-            work_amount=total_bytes,
-            capacity=hw_info.get_peak_memory_bandwidth_gbps(),
-        ))
-    else:
-        # Standard roofline path
-        flat_args, _ = tree_flatten((args, kwargs))
-        flat_outs, _ = tree_flatten(out)
-
-        out_dtypes = {
-            t.dtype
-            for t in flat_outs
-            if isinstance(t, torch.Tensor) and t.dtype in _FLOAT_TYPES
-        }
-
-        # Compute constraint
-        compute_ns = get_roofline_compute_time(
-            func_packet, args, kwargs, out, out_dtypes.copy(), hw_info, op_type
+        peak_flops = (
+            hw_info.get_peak_tflops(op_type, args[0].dtype if isinstance(args[0], torch.Tensor) else torch.float32)
+            * 1e12
         )
-        if compute_ns > 0 and out_dtypes:
-            dtype = _select_compute_dtype(args, out_dtypes)
-            flop_count_func = flop_registry.get(func_packet)
-            flop_count = flop_count_func(*args, **kwargs, out_val=out) if flop_count_func else 0
-            peak_flops = hw_info.get_peak_tflops(op_type, dtype) * 1e12 if dtype is not None else 0.0
-            constraints.append(ConstraintTime(
+        constraints.append(
+            ConstraintTime(
                 work_type="math",
                 unit_level="device",
                 time_ms=compute_ns / 1e6,
                 work_amount=flop_count,
                 capacity=peak_flops,
-            ))
+            )
+        )
+        constraints.append(
+            ConstraintTime(
+                work_type="memory",
+                unit_level="device",
+                time_ms=transfer_ns / 1e6,
+                work_amount=total_bytes,
+                capacity=hw_info.get_peak_memory_bandwidth_gbps(),
+            )
+        )
+    else:
+        # Standard roofline path
+        flat_args, _ = tree_flatten((args, kwargs))
+        flat_outs, _ = tree_flatten(out)
+
+        out_dtypes = {t.dtype for t in flat_outs if isinstance(t, torch.Tensor) and t.dtype in _FLOAT_TYPES}
+
+        # Compute constraint
+        compute_ns = get_roofline_compute_time(func_packet, args, kwargs, out, out_dtypes.copy(), hw_info, op_type)
+        if compute_ns > 0 and out_dtypes:
+            dtype = _select_compute_dtype(args, out_dtypes)
+            flop_count_func = flop_registry.get(func_packet)
+            flop_count = flop_count_func(*args, **kwargs, out_val=out) if flop_count_func else 0
+            peak_flops = hw_info.get_peak_tflops(op_type, dtype) * 1e12 if dtype is not None else 0.0
+            constraints.append(
+                ConstraintTime(
+                    work_type="math",
+                    unit_level="device",
+                    time_ms=compute_ns / 1e6,
+                    work_amount=flop_count,
+                    capacity=peak_flops,
+                )
+            )
 
         # Memory constraint
         transfer_ns = get_roofline_transfer_time(flat_args, flat_outs, hw_info)
         read_bytes = sum(get_num_bytes(t) for t in flat_args if isinstance(t, torch.Tensor))
         write_bytes = sum(get_num_bytes(t) for t in flat_outs if isinstance(t, torch.Tensor))
-        constraints.append(ConstraintTime(
-            work_type="memory",
-            unit_level="device",
-            time_ms=transfer_ns / 1e6,
-            work_amount=read_bytes + write_bytes,
-            capacity=hw_info.get_peak_memory_bandwidth_gbps(),
-        ))
+        constraints.append(
+            ConstraintTime(
+                work_type="memory",
+                unit_level="device",
+                time_ms=transfer_ns / 1e6,
+                work_amount=read_bytes + write_bytes,
+                capacity=hw_info.get_peak_memory_bandwidth_gbps(),
+            )
+        )
 
     # Find max constraint
     if not constraints:
@@ -649,9 +644,28 @@ def efficiency_estimate(
         return 1.0
 
     # 1. Get model manager
-    from .efficiency_models import get_backend_manager, EfficiencyFeatures
+    from .efficiency_models import EfficiencyFeatures, get_backend_manager
+
     model_manager = get_backend_manager()
-    model = model_manager.get_model(op_type)
+
+    # 1a. Derive dtype string from the operator output tensor.
+    # FP16/BF16 -> "fp16", FP8 dtypes -> "fp8". FP4 cannot be auto-detected
+    # (FlashInfer NVFP4 outputs are uint8); routing to FP4 is opt-in via
+    # SYSSIM_FORCE_DTYPE=fp4 env var.
+    dtype_str = "fp16"
+    flat_outs, _ = tree_flatten(out)
+    out_tensor_dtype = None
+    for t in flat_outs:
+        if isinstance(t, torch.Tensor):
+            out_tensor_dtype = t.dtype
+            break
+    if out_tensor_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        dtype_str = "fp8"
+    forced = os.environ.get("SYSSIM_FORCE_DTYPE")
+    if forced in ("fp16", "fp8", "fp4"):
+        dtype_str = forced
+
+    model = model_manager.get_model(op_type, dtype_str)
 
     # 2. Fallback if no model available
     if model is None:
@@ -665,8 +679,7 @@ def efficiency_estimate(
 
     # 5. Construct features
     features = EfficiencyFeatures(
-        constraint_times={(c.work_type, c.unit_level): c.time_ms
-                         for c in roofline_result.constraints},
+        constraint_times={(c.work_type, c.unit_level): c.time_ms for c in roofline_result.constraints},
         constraint_ratios=roofline_result.get_constraint_ratios(),
         dominant_constraint=roofline_result.dominant_constraint,
         op_params=op_params,
@@ -680,6 +693,7 @@ def efficiency_estimate(
     except Exception as e:
         # If prediction fails, fall back to pure roofline
         import logging
+
         logging.warning(f"Efficiency prediction failed: {e}")
         return 1.0
 
@@ -693,6 +707,7 @@ def estimate_runtime(
     op_type: OperatorType,
     execution_mode: ExecutionMode | None = None,
     cache_seq_len: int = 0,
+    plena_estimator: Any = None,
 ) -> float:
     """Estimate runtime using hybrid roofline + efficiency model.
 
@@ -705,20 +720,21 @@ def estimate_runtime(
         op_type: The OperatorType
         execution_mode: Optional execution mode
         cache_seq_len: KV cache sequence length
+        plena_estimator: Optional PLENAEstimator for PLENA backend path
 
     Returns:
         Estimated runtime in milliseconds.
     """
+    # PLENA backend path: use cycle-level estimation if PLENAEstimator provided
+    if plena_estimator is not None:
+        return plena_estimator.estimate_runtime(func_packet, args, kwargs, out, op_type, execution_mode, cache_seq_len)
+
     # Compute multi-dimensional roofline
-    roofline_result = roofline_estimate(
-        func_packet, args, kwargs, out, hw_info, op_type,
-        execution_mode, cache_seq_len
-    )
+    roofline_result = roofline_estimate(func_packet, args, kwargs, out, hw_info, op_type, execution_mode, cache_seq_len)
 
     # Predict efficiency
     efficiency = efficiency_estimate(
-        func_packet, args, kwargs, out, hw_info, op_type,
-        roofline_result, execution_mode, cache_seq_len
+        func_packet, args, kwargs, out, hw_info, op_type, roofline_result, execution_mode, cache_seq_len
     )
 
     # Compute final estimate

@@ -6,7 +6,6 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -89,10 +88,12 @@ class MLPEfficiencyModel(EfficiencyModel):
         layers = []
         prev_dim = input_dim
         for i, hidden_dim in enumerate(hidden_dims):
-            layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                nn.ReLU(),
-            ])
+            layers.extend(
+                [
+                    nn.Linear(prev_dim, hidden_dim),
+                    nn.ReLU(),
+                ]
+            )
             # Add dropout after all but the last hidden layer
             if i < len(hidden_dims) - 1:
                 layers.append(nn.Dropout(0.1))
@@ -152,24 +153,30 @@ class XGBoostEfficiencyModel(EfficiencyModel):
 
 
 class BackendManager:
-    """Manages efficiency models per operator class."""
+    """Manages efficiency models per (operator, dtype) class.
+
+    Files are looked up as ``{op}_{hw}_{dtype}_xgb.pth`` first, then ``_mlp.pth``.
+    Legacy files without a ``_{dtype}_`` segment (e.g. existing GH200 models) are
+    treated as fp16 for backwards compatibility.
+    """
 
     def __init__(self, model_dir: Optional[str] = None):
         self.model_dir = model_dir
-        self._models: dict[Any, Optional[EfficiencyModel]] = {}
+        self.hw_name: Optional[str] = None
+        self._models: dict[tuple[Any, str], Optional[EfficiencyModel]] = {}
 
         if model_dir is not None:
             self._load_models()
 
     def _load_models(self):
-        """Load all available models (XGBoost or MLP) from model_dir."""
+        """Load all available models (XGBoost or MLP) from model_dir for this hw."""
         if not os.path.isdir(self.model_dir):
             log.warning(f"Model directory not found: {self.model_dir}")
             return
 
         # Import OperatorType and get_hardware_info here to avoid circular import
-        from ..operator_graph import OperatorType
         from ..config import get_hardware_info
+        from ..operator_graph import OperatorType
 
         # Get hardware name
         try:
@@ -177,43 +184,69 @@ class BackendManager:
         except RuntimeError as e:
             log.warning(f"Could not identify hardware: {e}")
             return
+        self.hw_name = hw_name
+
+        dtypes = ("fp16", "fp8", "fp4")
+
+        def _try_load_xgb(path: str):
+            checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+            feature_order = checkpoint["feature_order"]
+            return XGBoostEfficiencyModel(path, feature_order)
+
+        def _try_load_mlp(path: str):
+            checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+            feature_order = checkpoint["feature_order"]
+            return MLPEfficiencyModel(path, feature_order)
 
         for op_type in OperatorType:
-            # Try XGBoost first (if available, prefer over MLP)
-            xgb_name = f"{op_type.value}_{hw_name}_xgb.pth"
-            xgb_path = os.path.join(self.model_dir, xgb_name)
+            for dtype in dtypes:
+                # Per-dtype filenames first ({op}_{hw}_{dtype}_xgb.pth)
+                xgb_path = os.path.join(self.model_dir, f"{op_type.value}_{hw_name}_{dtype}_xgb.pth")
+                mlp_path = os.path.join(self.model_dir, f"{op_type.value}_{hw_name}_{dtype}_mlp.pth")
 
-            if os.path.exists(xgb_path):
+                # Legacy fallback for FP16 only (no dtype in filename, e.g. gh200)
+                legacy_xgb = os.path.join(self.model_dir, f"{op_type.value}_{hw_name}_xgb.pth")
+                legacy_mlp = os.path.join(self.model_dir, f"{op_type.value}_{hw_name}_mlp.pth")
+
+                model: Optional[EfficiencyModel] = None
                 try:
-                    checkpoint = torch.load(xgb_path, map_location="cpu", weights_only=False)
-                    feature_order = checkpoint["feature_order"]
-                    model = XGBoostEfficiencyModel(xgb_path, feature_order)
-                    self._models[op_type] = model
-                    log.info(f"Loaded XGBoost model for {op_type.value} ({hw_name})")
-                    continue  # Skip MLP if XGBoost exists
+                    if os.path.exists(xgb_path):
+                        model = _try_load_xgb(xgb_path)
+                        log.info(f"Loaded XGBoost {op_type.value} {dtype} ({hw_name})")
+                    elif os.path.exists(mlp_path):
+                        model = _try_load_mlp(mlp_path)
+                        log.info(f"Loaded MLP {op_type.value} {dtype} ({hw_name})")
+                    elif dtype == "fp16" and os.path.exists(legacy_xgb):
+                        model = _try_load_xgb(legacy_xgb)
+                        log.info(f"Loaded legacy XGBoost {op_type.value} ({hw_name}) as fp16")
+                    elif dtype == "fp16" and os.path.exists(legacy_mlp):
+                        model = _try_load_mlp(legacy_mlp)
+                        log.info(f"Loaded legacy MLP {op_type.value} ({hw_name}) as fp16")
                 except Exception as e:
-                    log.warning(f"Failed to load XGBoost for {op_type.value}: {e}")
+                    log.warning(f"Failed to load {op_type.value} {dtype}: {e}")
+                    model = None
 
-            # Fall back to MLP
-            mlp_name = f"{op_type.value}_{hw_name}_mlp.pth"
-            mlp_path = os.path.join(self.model_dir, mlp_name)
+                self._models[(op_type, dtype)] = model
 
-            if os.path.exists(mlp_path):
-                try:
-                    checkpoint = torch.load(mlp_path, map_location="cpu", weights_only=True)
-                    feature_order = checkpoint["feature_order"]
-                    model = MLPEfficiencyModel(mlp_path, feature_order)
-                    self._models[op_type] = model
-                    log.info(f"Loaded MLP model for {op_type.value} ({hw_name})")
-                except Exception as e:
-                    log.warning(f"Failed to load MLP for {op_type.value}: {e}")
-                    self._models[op_type] = None
-            else:
-                self._models[op_type] = None
+    def _resolve_model_path(self, op_type: Any, dtype: str) -> str:
+        """Build the canonical model file path for testing helpers."""
+        return os.path.join(
+            self.model_dir or "",
+            f"{op_type.value}_{self.hw_name}_{dtype}_xgb.pth",
+        )
 
-    def get_model(self, op_type: Any) -> Optional[EfficiencyModel]:
-        """Get model for operator type, or None if unavailable."""
-        return self._models.get(op_type)
+    def get_model(self, op_type: Any, dtype: str = "fp16") -> Optional[EfficiencyModel]:
+        """Get model for (operator type, dtype), or None if unavailable.
+
+        Falls back to fp16 when the requested dtype has no model loaded; this
+        keeps the predictor responsive on hardware without per-dtype training.
+        """
+        m = self._models.get((op_type, dtype))
+        if m is not None:
+            return m
+        if dtype != "fp16":
+            return self._models.get((op_type, "fp16"))
+        return None
 
 
 # Singleton instance

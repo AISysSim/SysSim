@@ -4,7 +4,7 @@ Tests mesh coordinate mapping, rank enumeration, and validation.
 """
 
 import pytest
-import numpy as np
+
 from syssim.network.device_mesh import DeviceMesh
 
 
@@ -13,22 +13,16 @@ class TestDeviceMeshBasic:
 
     def test_2d_mesh_creation(self):
         """Test creating a simple 2D mesh."""
-        mesh = DeviceMesh(
-            shape=[4, 4],
-            dimension_names=["node", "gpu_in_node"]
-        )
+        mesh = DeviceMesh(shape=[4, 4], dimension_names=["node", "gpu_in_node"])
 
         assert mesh.total_ranks == 16
         assert mesh.shape == (4, 4)
         assert mesh.dimension_names == ["node", "gpu_in_node"]
-        assert mesh.ranks_order == 'C'  # Default
+        assert mesh.ranks_order == "C"  # Default
 
     def test_3d_mesh_creation(self):
         """Test creating a 3D mesh (rack, node, gpu)."""
-        mesh = DeviceMesh(
-            shape=[2, 4, 4],
-            dimension_names=["rack", "node_in_rack", "gpu_in_node"]
-        )
+        mesh = DeviceMesh(shape=[2, 4, 4], dimension_names=["rack", "node_in_rack", "gpu_in_node"])
 
         assert mesh.total_ranks == 32
         assert mesh.shape == (2, 4, 4)
@@ -39,7 +33,7 @@ class TestDeviceMeshBasic:
         with pytest.raises(ValueError, match="must have same length"):
             DeviceMesh(
                 shape=[4, 4],
-                dimension_names=["node"]  # Only 1 name, but shape is 2D
+                dimension_names=["node"],  # Only 1 name, but shape is 2D
             )
 
     def test_invalid_ranks_order(self):
@@ -48,7 +42,7 @@ class TestDeviceMeshBasic:
             DeviceMesh(
                 shape=[4, 4],
                 dimension_names=["node", "gpu"],
-                ranks_order='X'  # Invalid
+                ranks_order="X",  # Invalid
             )
 
     def test_zero_dimension_size(self):
@@ -56,7 +50,7 @@ class TestDeviceMeshBasic:
         with pytest.raises(ValueError, match="must be positive"):
             DeviceMesh(
                 shape=[4, 0],  # Invalid: 0 GPUs
-                dimension_names=["node", "gpu"]
+                dimension_names=["node", "gpu"],
             )
 
     def test_duplicate_dimension_names(self):
@@ -64,7 +58,7 @@ class TestDeviceMeshBasic:
         with pytest.raises(ValueError, match="must be unique"):
             DeviceMesh(
                 shape=[4, 4],
-                dimension_names=["node", "node"]  # Duplicate
+                dimension_names=["node", "node"],  # Duplicate
             )
 
 
@@ -119,7 +113,7 @@ class TestDeviceMeshCoordinates:
 
     def test_column_major_order(self):
         """Test column-major (Fortran) ordering."""
-        mesh = DeviceMesh([4, 4], ["node", "gpu"], ranks_order='F')
+        mesh = DeviceMesh([4, 4], ["node", "gpu"], ranks_order="F")
 
         # Column-major: rank = node + gpu*4
         assert mesh.rank_at([0, 0]) == 0
@@ -286,7 +280,7 @@ class TestDeviceMeshValidation:
         with pytest.raises(ValueError, match="cannot overlap"):
             mesh.validate_dimension_scope(
                 {"node": 0, "gpu": 0},  # Both fixed
-                ["gpu"]  # GPU also in vary_dims → overlap
+                ["gpu"],  # GPU also in vary_dims → overlap
             )
 
     def test_validate_dimension_scope_invalid_dimension(self):
@@ -294,10 +288,7 @@ class TestDeviceMeshValidation:
         mesh = DeviceMesh([4, 4], ["node", "gpu"])
 
         with pytest.raises(ValueError, match="not in mesh"):
-            mesh.validate_dimension_scope(
-                {"invalid_dim": 0},
-                ["gpu"]
-            )
+            mesh.validate_dimension_scope({"invalid_dim": 0}, ["gpu"])
 
     def test_validate_dimension_scope_partial_coverage(self):
         """Test that partial coverage is allowed (missing dims = implicit varying)."""

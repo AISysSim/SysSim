@@ -42,6 +42,7 @@ class Resource:
         >>> link.bandwidth
         25000000000.0
     """
+
     name: str
     bandwidth: float  # bytes/second
 
@@ -113,11 +114,11 @@ class Topology(ABC):
             25000000000.0
         """
         if src == dst:
-            return float('inf')
+            return float("inf")
 
         path = self.resolve_path(src, dst)
         if not path:
-            return float('inf')
+            return float("inf")
 
         return min(res.bandwidth for res in path)
 
@@ -365,19 +366,13 @@ class SwitchTopology(Topology):
         self.switch_bandwidth = switch_bandwidth
 
         # Create uplinks (rank -> switch)
-        self.uplinks = [
-            Resource(f"uplink_{i}", link_bandwidth)
-            for i in range(num_ranks)
-        ]
+        self.uplinks = [Resource(f"uplink_{i}", link_bandwidth) for i in range(num_ranks)]
 
         # Create switch fabric (shared by all)
         self.switch_fabric = Resource("switch_fabric", switch_bandwidth)
 
         # Create downlinks (switch -> rank)
-        self.downlinks = [
-            Resource(f"downlink_{i}", link_bandwidth)
-            for i in range(num_ranks)
-        ]
+        self.downlinks = [Resource(f"downlink_{i}", link_bandwidth) for i in range(num_ranks)]
 
     def resolve_path(self, src: int, dst: int) -> list[Resource]:
         """Resolve path from src to dst through switch.
@@ -511,7 +506,7 @@ class NVLinkMeshTopology(Topology):
             Aggregate bandwidth (nvlink_bandwidth * links_per_pair)
         """
         if src == dst:
-            return float('inf')
+            return float("inf")
 
         return self.nvlink_bandwidth * self.links_per_pair
 
@@ -600,20 +595,13 @@ class HierarchicalTopology(Topology):
 
         # Create NVLink meshes (one per node)
         self.nvlink_meshes = [
-            NVLinkMeshTopology(gpus_per_node, nvlink_bandwidth, nvlink_count)
-            for _ in range(num_nodes)
+            NVLinkMeshTopology(gpus_per_node, nvlink_bandwidth, nvlink_count) for _ in range(num_nodes)
         ]
 
         # Create InfiniBand resources (one uplink + one downlink per node)
-        self.ib_uplinks = [
-            Resource(f"ib_uplink_{node}", ib_bandwidth)
-            for node in range(num_nodes)
-        ]
+        self.ib_uplinks = [Resource(f"ib_uplink_{node}", ib_bandwidth) for node in range(num_nodes)]
 
-        self.ib_downlinks = [
-            Resource(f"ib_downlink_{node}", ib_bandwidth)
-            for node in range(num_nodes)
-        ]
+        self.ib_downlinks = [Resource(f"ib_downlink_{node}", ib_bandwidth) for node in range(num_nodes)]
 
         # Shared IB fabric
         self.ib_fabric = Resource("ib_fabric", ib_bandwidth * num_nodes)
@@ -624,7 +612,7 @@ class HierarchicalTopology(Topology):
         model_path,  # str or Path
         num_ranks: int,
         ranks_per_node: int,
-        nvlink_count: int = 12
+        nvlink_count: int = 12,
     ):
         """Create HierarchicalTopology from profiled hierarchical model.
 
@@ -669,8 +657,7 @@ class HierarchicalTopology(Topology):
         for layer in expected_layers:
             if layer not in params:
                 raise ValueError(
-                    f"Expected layer '{layer}' not found in model. "
-                    f"Available layers: {list(params.keys())}"
+                    f"Expected layer '{layer}' not found in model. Available layers: {list(params.keys())}"
                 )
 
         # Extract LogGP parameters
@@ -684,9 +671,7 @@ class HierarchicalTopology(Topology):
         # Calculate topology parameters
         num_nodes = num_ranks // ranks_per_node
         if num_ranks % ranks_per_node != 0:
-            raise ValueError(
-                f"num_ranks ({num_ranks}) must be divisible by ranks_per_node ({ranks_per_node})"
-            )
+            raise ValueError(f"num_ranks ({num_ranks}) must be divisible by ranks_per_node ({ranks_per_node})")
 
         # Create topology with profiled parameters
         return cls(
@@ -696,7 +681,7 @@ class HierarchicalTopology(Topology):
             nvlink_count=nvlink_count,
             ib_bandwidth=ib_bw,
             loggp_nvlink=loggp_nvlink,
-            loggp_ib=loggp_ib
+            loggp_ib=loggp_ib,
         )
 
     def _rank_to_node(self, rank: int) -> int:
@@ -796,7 +781,7 @@ class HierarchicalTopology(Topology):
             NVLink bandwidth if same node, InfiniBand bandwidth if different nodes
         """
         if src == dst:
-            return float('inf')
+            return float("inf")
 
         src_node = self._rank_to_node(src)
         dst_node = self._rank_to_node(dst)

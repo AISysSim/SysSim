@@ -3,8 +3,8 @@
 Verifies that FLOP counts are NOT divided by 2 in the roofline model.
 """
 
-import torch
 import pytest
+import torch
 
 from syssim.compute.compute_cost_predictor import roofline_estimate
 from syssim.config import HardwareInfo
@@ -33,9 +33,7 @@ class TestFlopBugFix:
         b = torch.randn(K, N, dtype=torch.float32)
         out = torch.randn(M, N, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         # Find the math constraint
         math_constraint = None
@@ -61,9 +59,7 @@ class TestFlopBugFix:
         b = torch.randn(K, N, dtype=torch.float32)
         out = torch.randn(M, N, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
 
@@ -75,8 +71,7 @@ class TestFlopBugFix:
 
         # Should match (within floating point precision)
         assert abs(math_constraint.time_ms - expected_time_ms) < 1e-9, (
-            f"Compute time should be {expected_time_ms:.9f}ms, "
-            f"got {math_constraint.time_ms:.9f}ms"
+            f"Compute time should be {expected_time_ms:.9f}ms, got {math_constraint.time_ms:.9f}ms"
         )
 
         print(f"✓ Compute time correct: {math_constraint.time_ms:.9f}ms for {expected_flops} FLOPs")
@@ -88,9 +83,7 @@ class TestFlopBugFix:
         b = torch.randn(K, N, dtype=torch.float32)
         out = torch.randn(M, N, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
         expected_flops = 2 * M * N * K
@@ -107,17 +100,13 @@ class TestFlopBugFix:
             b = torch.randn(K, N, dtype=dtype)
             out = torch.randn(M, N, dtype=dtype)
 
-            result = roofline_estimate(
-                aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-            )
+            result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
             math_constraint = next(c for c in result.constraints if c.work_type == "math")
             expected_flops = 2 * M * N * K
-            assert math_constraint.work_amount == expected_flops, (
-                f"FLOP count for {dtype} should be {expected_flops}"
-            )
+            assert math_constraint.work_amount == expected_flops, f"FLOP count for {dtype} should be {expected_flops}"
 
-        print(f"✓ All dtypes use correct FLOP count")
+        print("✓ All dtypes use correct FLOP count")
 
     def test_flash_attention_mixed_output_dtypes_has_compute_time(self, hw_info):
         """Flash attention should use input dtype when auxiliary outputs differ."""
@@ -152,9 +141,7 @@ class TestFlopBugFix:
         b = torch.randn(K, N, dtype=torch.float32)
         out = torch.randn(M, N, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
 
@@ -186,35 +173,27 @@ class TestRooflineIsAnalyticalCeiling:
         """Roofline should use peak FLOP/s without any derating."""
         M = 2048
         a = torch.randn(M, M, dtype=torch.float32)
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM)
 
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
 
         # Capacity should be exactly peak FLOP/s
         expected_capacity = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32) * 1e12
-        assert math_constraint.capacity == expected_capacity, (
-            f"Should use peak capacity {expected_capacity:.2e} FLOP/s"
-        )
+        assert math_constraint.capacity == expected_capacity, f"Should use peak capacity {expected_capacity:.2e} FLOP/s"
 
-        print(f"✓ Roofline uses peak FLOP/s: {expected_capacity/1e12:.1f} TFLOP/s")
+        print(f"✓ Roofline uses peak FLOP/s: {expected_capacity / 1e12:.1f} TFLOP/s")
 
     def test_roofline_uses_peak_bandwidth(self, hw_info):
         """Roofline should use peak memory bandwidth without any derating."""
         M = 2048
         a = torch.randn(M, M, dtype=torch.float32)
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM)
 
         mem_constraint = next(c for c in result.constraints if c.work_type == "memory")
 
         # Capacity should be exactly peak bandwidth
         expected_capacity = hw_info.get_peak_memory_bandwidth_gbps()
-        assert mem_constraint.capacity == expected_capacity, (
-            f"Should use peak bandwidth {expected_capacity:.1f} GB/s"
-        )
+        assert mem_constraint.capacity == expected_capacity, f"Should use peak bandwidth {expected_capacity:.1f} GB/s"
 
         print(f"✓ Roofline uses peak bandwidth: {expected_capacity:.1f} GB/s")
 
@@ -223,9 +202,7 @@ class TestRooflineIsAnalyticalCeiling:
         # Tiny operation
         M = 8
         a = torch.randn(M, M, dtype=torch.float32)
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM)
 
         # For tiny ops, roofline time should be very small (nanoseconds)
         # If kernel launch overhead were included, it would be ~7μs

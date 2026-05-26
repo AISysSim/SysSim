@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -6,9 +8,9 @@ import torch
 
 
 class ExecutionMode(Enum):
-    TRAINING = "training"    # Forward + backward, standard shapes
-    PREFILL = "prefill"      # Forward only, full sequence length
-    DECODE = "decode"        # Forward only, seq_len=1, KV cache read
+    TRAINING = "training"  # Forward + backward, standard shapes
+    PREFILL = "prefill"  # Forward only, full sequence length
+    DECODE = "decode"  # Forward only, seq_len=1, KV cache read
 
 
 @dataclass
@@ -54,22 +56,23 @@ class NetworkParams:
         ...     loggp_ib_o=10e-6,       # Higher overhead than NVLink
         ... )
     """
+
     # Single-node parameters
     nvlink_bandwidth: float = 25e9  # bytes/second per NVLink
-    nvlink_count: int = 12          # NVLinks per GPU pair (DGX A100)
-    ib_bandwidth: float = 25e9      # bytes/second (200 Gb/s = 25 GB/s)
+    nvlink_count: int = 12  # NVLinks per GPU pair (DGX A100)
+    ib_bandwidth: float = 25e9  # bytes/second (200 Gb/s = 25 GB/s)
 
     # Multi-node parameters
     num_nodes: int = 1
     gpus_per_node: int = 8
 
     # LogGP parameters - NVLink (intra-node)
-    loggp_nvlink_L: float = 1e-6    # latency (seconds)
-    loggp_nvlink_o: float = 5e-6    # CPU overhead (seconds)
+    loggp_nvlink_L: float = 1e-6  # latency (seconds)
+    loggp_nvlink_o: float = 5e-6  # CPU overhead (seconds)
 
     # LogGP parameters - InfiniBand (inter-node)
-    loggp_ib_L: float = 5e-6        # latency (seconds)
-    loggp_ib_o: float = 10e-6       # CPU overhead (seconds)
+    loggp_ib_L: float = 5e-6  # latency (seconds)
+    loggp_ib_o: float = 10e-6  # CPU overhead (seconds)
 
 
 class HardwareInfo:
@@ -110,6 +113,8 @@ class HardwareInfo:
         peak_tflops_math: float,
         peak_memory_bandwidth_gbps: float,
         peak_tflops_mm_conservative: float | None = None,
+        peak_tflops_mm_fp8: float | None = None,
+        peak_tflops_mm_fp4: float | None = None,
         network: Optional[NetworkParams] = None,
     ):
         self.peak_tflops_mm = peak_tflops_mm
@@ -119,6 +124,9 @@ class HardwareInfo:
         self.peak_tflops_mm_conservative = (
             peak_tflops_mm_conservative if peak_tflops_mm_conservative is not None else peak_tflops_mm
         )
+        # Per-dtype peak tensor-unit throughput (Blackwell+: separate FP8/FP4 peaks)
+        self.peak_tflops_mm_fp8 = peak_tflops_mm_fp8
+        self.peak_tflops_mm_fp4 = peak_tflops_mm_fp4
         # Network parameters (for network simulator)
         self.network = network if network is not None else NetworkParams()
 
@@ -136,6 +144,7 @@ class HardwareInfo:
             Peak FLOP/s in TFLOP/s
         """
         from .operator_graph import OperatorType
+
         if op_type in (OperatorType.GEMM, OperatorType.ATTN):
             return self.peak_tflops_mm if is_large_op else self.peak_tflops_mm_conservative
         else:
@@ -143,6 +152,27 @@ class HardwareInfo:
 
     def get_peak_memory_bandwidth_gbps(self) -> float:
         return self.peak_memory_bandwidth_gbps
+
+    def get_peak_tflops_mm_for_dtype(self, dtype) -> float:
+        """Return matrix-unit peak TFLOP/s for the given dtype.
+
+        FP8 dtypes (torch.float8_e4m3fn, torch.float8_e5m2) use peak_tflops_mm_fp8;
+        the string "nvfp4" sentinel is used for FP4 (FlashInfer NVFP4 format
+        does not have a real torch dtype). When a per-dtype peak is unset
+        (older hardware), falls back to peak_tflops_mm.
+        """
+        # FP8 (Hopper+ tensor units)
+        if dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            if self.peak_tflops_mm_fp8 is not None:
+                return self.peak_tflops_mm_fp8
+            return self.peak_tflops_mm
+        # FP4 — surfaced as sentinel string ("nvfp4") since no torch dtype exists
+        if isinstance(dtype, str) and dtype == "nvfp4":
+            if self.peak_tflops_mm_fp4 is not None:
+                return self.peak_tflops_mm_fp4
+            return self.peak_tflops_mm
+        # Default (FP16/BF16/FP32) -> primary tensor-unit peak
+        return self.peak_tflops_mm
 
 
 def get_hardware_info() -> tuple[HardwareInfo, str]:
@@ -164,50 +194,47 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
     device_name = torch.cuda.get_device_name(0).lower()
 
     # Hardware specifications lookup table
-    # Format: (pattern, hw_name, peak_tflops_mm_fp16, peak_tflops_math_fp16, peak_bw_gb_s)
+    # Format: (pattern, hw_name, peak_mm_fp16, peak_math_fp16, peak_bw, peak_mm_fp8, peak_mm_fp4)
     hw_database = [
         # NVIDIA GH200 (Grace Hopper) - uses H100 GPU specs
-        ("gh200", "gh200", 989.0, 989.0, 3350.0),
-        ("grace hopper", "gh200", 989.0, 989.0, 3350.0),
-
+        ("gh200", "gh200", 989.0, 989.0, 3350.0, None, None),
+        ("grace hopper", "gh200", 989.0, 989.0, 3350.0, None, None),
         # NVIDIA H100
-        ("h100", "h100", 1979.0, 989.0, 3350.0),
-
+        ("h100", "h100", 1979.0, 989.0, 3350.0, None, None),
         # NVIDIA A100
-        ("a100", "a100", 312.0, 156.0, 1935.0),
-
+        ("a100", "a100", 312.0, 156.0, 1935.0, None, None),
         # NVIDIA V100
-        ("v100", "v100", 125.0, 62.5, 900.0),
-
+        ("v100", "v100", 125.0, 62.5, 900.0, None, None),
         # NVIDIA A40
-        ("a40", "a40", 149.0, 74.5, 696.0),
-
+        ("a40", "a40", 149.0, 74.5, 696.0, None, None),
         # NVIDIA RTX 4090
-        ("rtx 4090", "rtx4090", 330.0, 165.0, 1008.0),
-        ("geforce rtx 4090", "rtx4090", 330.0, 165.0, 1008.0),
-
+        ("rtx 4090", "rtx4090", 330.0, 165.0, 1008.0, None, None),
+        ("geforce rtx 4090", "rtx4090", 330.0, 165.0, 1008.0, None, None),
         # NVIDIA Blackwell (datacenter)
         ("b200", "b200", 4500.0, 2250.0, 8000.0),
         ("b100", "b100", 3500.0, 1750.0, 8000.0),
-
         # NVIDIA RTX PRO 6000 Blackwell (workstation/server edition)
         ("rtx pro 6000 blackwell", "rtx_pro_6000_blackwell", 1006.0, 503.0, 1792.0),
         ("rtx 6000 pro blackwell", "rtx_pro_6000_blackwell", 1006.0, 503.0, 1792.0),
-
         # AMD MI250
-        ("mi250", "mi250", 362.0, 181.0, 1600.0),
-
+        ("mi250", "mi250", 362.0, 181.0, 1600.0, None, None),
         # AMD MI300
-        ("mi300", "mi300", 653.0, 326.5, 5200.0),
+        ("mi300", "mi300", 653.0, 326.5, 5200.0, None, None),
+        # NVIDIA RTX PRO 6000 Blackwell (GB202) - dense peak TFLOP/s
+        # FP16/BF16: 3,752 | FP8: 7,504 | FP4 (NVFP4): 15,008 | BW: 1,792 GB/s (GDDR7)
+        ("rtx pro 6000", "pro6000", 3752.0, 117.0, 1792.0, 7504.0, 15008.0),
+        ("blackwell", "pro6000", 3752.0, 117.0, 1792.0, 7504.0, 15008.0),
     ]
 
     # Check device name against known patterns
-    for pattern, hw_name, peak_mm, peak_math, peak_bw in hw_database:
+    for pattern, hw_name, peak_mm, peak_math, peak_bw, peak_fp8, peak_fp4 in hw_database:
         if pattern in device_name:
             hw_info = HardwareInfo(
                 peak_tflops_mm=peak_mm,
                 peak_tflops_math=peak_math,
                 peak_memory_bandwidth_gbps=peak_bw,
+                peak_tflops_mm_fp8=peak_fp8,
+                peak_tflops_mm_fp4=peak_fp4,
             )
             return hw_info, hw_name
 

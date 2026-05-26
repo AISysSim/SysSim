@@ -9,10 +9,16 @@ Tests cover:
 """
 
 import pytest
-import math
+
 from syssim.network import (
-    allreduce, broadcast, reduce, reduce_scatter, allgather,
-    alltoall, scatter, gather,
+    allgather,
+    allreduce,
+    alltoall,
+    broadcast,
+    gather,
+    reduce,
+    reduce_scatter,
+    scatter,
 )
 
 
@@ -235,7 +241,7 @@ class TestScatter:
 
         # Each op (except first) should depend on previous op from same src
         for i in range(1, len(ops)):
-            assert ops[i-1] in ops[i].deps
+            assert ops[i - 1] in ops[i].deps
 
 
 class TestGather:
@@ -314,12 +320,12 @@ class TestCollectivesEdgeCases:
         ops_gath = gather(ranks, size, root=0)
 
         # Verify op counts
-        assert len(ops_ar) == 8 * 2 * (8-1)  # 2(P-1) steps, P ops per step
+        assert len(ops_ar) == 8 * 2 * (8 - 1)  # 2(P-1) steps, P ops per step
         assert len(ops_bc) == 7  # Binomial tree: 7 sends for 8 ranks
         assert len(ops_red) == 7  # Binomial tree: 7 receives for 8 ranks
-        assert len(ops_rs) == 8 * (8-1)  # (P-1) steps, P ops per step
-        assert len(ops_ag) == 8 * (8-1)  # (P-1) steps, P ops per step
-        assert len(ops_a2a) == 8 * (8-1)  # (P-1) steps, P ops per step
+        assert len(ops_rs) == 8 * (8 - 1)  # (P-1) steps, P ops per step
+        assert len(ops_ag) == 8 * (8 - 1)  # (P-1) steps, P ops per step
+        assert len(ops_a2a) == 8 * (8 - 1)  # (P-1) steps, P ops per step
         assert len(ops_scat) == 7  # Root sends to P-1 others
         assert len(ops_gath) == 7  # P-1 send to root
 
@@ -330,7 +336,7 @@ class TestCollectivesEdgeCases:
 
         # Should not raise
         ops = allreduce(ranks, size)
-        assert len(ops) == 4 * 2 * (4-1)
+        assert len(ops) == 4 * 2 * (4 - 1)
 
         # Check that actual rank IDs are used
         all_srcs = {op.src for op in ops}

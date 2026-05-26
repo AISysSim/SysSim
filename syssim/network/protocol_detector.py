@@ -15,6 +15,7 @@ References:
 
 from dataclasses import dataclass
 from typing import List, Tuple
+
 import numpy as np
 
 
@@ -28,6 +29,7 @@ class PRTTMeasurement:
         prtt_n_0: PRTT(n, 0, size) - n iterations, no delay
         prtt_n_dG: PRTT(n, dG, size) - n iterations with dG delay
     """
+
     size: int
     prtt_1_0: float  # seconds
     prtt_n_0: float  # seconds
@@ -46,6 +48,7 @@ class ProtocolRange:
         G: Gap per byte parameter (seconds/byte)
         fit_error: Mean squared error of least-squares fit
     """
+
     start_idx: int
     end_idx: int
     sizes: List[int]
@@ -134,10 +137,7 @@ def least_squares_fit(sizes: List[int], gall: List[float]) -> Tuple[float, float
 
 
 def detect_protocol_changes(
-    measurements: List[PRTTMeasurement],
-    n: int = 10,
-    lookahead: int = 3,
-    pfact: float = 2.0
+    measurements: List[PRTTMeasurement], n: int = 10, lookahead: int = 3, pfact: float = 2.0
 ) -> List[ProtocolRange]:
     """Detect protocol changes using Hoefler's lookahead algorithm.
 
@@ -182,8 +182,8 @@ def detect_protocol_changes(
     i = 0
     while i < len(measurements):
         # Fit to current range [last_change : i+1]
-        sizes_current = [m.size for m in measurements[last_change:i+1]]
-        gall_current = gall[last_change:i+1]
+        sizes_current = [m.size for m in measurements[last_change : i + 1]]
+        gall_current = gall[last_change : i + 1]
 
         if len(sizes_current) < 2:
             # Need at least 2 points to fit
@@ -199,8 +199,8 @@ def detect_protocol_changes(
             all_worse = True
             for offset in range(1, lookahead + 1):
                 # Fit including next point
-                sizes_next = [m.size for m in measurements[last_change:i+1+offset]]
-                gall_next = gall[last_change:i+1+offset]
+                sizes_next = [m.size for m in measurements[last_change : i + 1 + offset]]
+                gall_next = gall[last_change : i + 1 + offset]
                 _, _, mse_next = least_squares_fit(sizes_next, gall_next)
 
                 # If ANY point has acceptable fit, no protocol change
@@ -213,14 +213,16 @@ def detect_protocol_changes(
 
         if protocol_changed:
             # Save current protocol range
-            ranges.append(ProtocolRange(
-                start_idx=last_change,
-                end_idx=i,
-                sizes=[m.size for m in measurements[last_change:i+1]],
-                g=g_current,
-                G=G_current,
-                fit_error=mse_current
-            ))
+            ranges.append(
+                ProtocolRange(
+                    start_idx=last_change,
+                    end_idx=i,
+                    sizes=[m.size for m in measurements[last_change : i + 1]],
+                    g=g_current,
+                    G=G_current,
+                    fit_error=mse_current,
+                )
+            )
 
             # Start new protocol
             last_change = i + 1
@@ -234,26 +236,30 @@ def detect_protocol_changes(
 
         if len(sizes_final) >= 2:
             g_final, G_final, mse_final = least_squares_fit(sizes_final, gall_final)
-            ranges.append(ProtocolRange(
-                start_idx=last_change,
-                end_idx=len(measurements) - 1,
-                sizes=sizes_final,
-                g=g_final,
-                G=G_final,
-                fit_error=mse_final
-            ))
+            ranges.append(
+                ProtocolRange(
+                    start_idx=last_change,
+                    end_idx=len(measurements) - 1,
+                    sizes=sizes_final,
+                    g=g_final,
+                    G=G_final,
+                    fit_error=mse_final,
+                )
+            )
         elif len(sizes_final) == 1:
             # Single point: use last fitted params if available
             if ranges:
                 # Use parameters from previous protocol
-                ranges.append(ProtocolRange(
-                    start_idx=last_change,
-                    end_idx=len(measurements) - 1,
-                    sizes=sizes_final,
-                    g=ranges[-1].g,
-                    G=ranges[-1].G,
-                    fit_error=0.0  # Single point, no error
-                ))
+                ranges.append(
+                    ProtocolRange(
+                        start_idx=last_change,
+                        end_idx=len(measurements) - 1,
+                        sizes=sizes_final,
+                        g=ranges[-1].g,
+                        G=ranges[-1].G,
+                        fit_error=0.0,  # Single point, no error
+                    )
+                )
             else:
                 # No previous protocol, can't fit
                 raise ValueError("Cannot fit single measurement without protocol history")
@@ -263,13 +269,10 @@ def detect_protocol_changes(
         sizes_all = [m.size for m in measurements]
         gall_all = gall
         g_all, G_all, mse_all = least_squares_fit(sizes_all, gall_all)
-        ranges.append(ProtocolRange(
-            start_idx=0,
-            end_idx=len(measurements) - 1,
-            sizes=sizes_all,
-            g=g_all,
-            G=G_all,
-            fit_error=mse_all
-        ))
+        ranges.append(
+            ProtocolRange(
+                start_idx=0, end_idx=len(measurements) - 1, sizes=sizes_all, g=g_all, G=G_all, fit_error=mse_all
+            )
+        )
 
     return ranges

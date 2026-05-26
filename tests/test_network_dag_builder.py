@@ -7,8 +7,7 @@ Tests cover:
 - Tag generation
 """
 
-import pytest
-from syssim.network import build_dag, Op, Step
+from syssim.network import build_dag
 
 
 class TestBuildDAG:

@@ -28,31 +28,40 @@ See Also:
 """
 
 # Core abstractions
-from .loggp import LogGPParams
-from .topology import (
-    Topology, Resource,
-    FullyConnectedTopology, RingTopology, SwitchTopology,
-    NVLinkMeshTopology, HierarchicalTopology
-)
-from .dag_builder import Op, Step, build_dag
-
 # Collectives
 from .collectives import (
-    allreduce, broadcast, reduce, reduce_scatter, allgather,
-    alltoall, scatter, gather,
+    allgather,
+    allreduce,
+    alltoall,
+    broadcast,
+    gather,
+    reduce,
+    reduce_scatter,
+    scatter,
 )
-
-# Simulation engine
-from .simulator import simulate, SimulationResult
+from .dag_builder import Op, Step, build_dag
+from .loggp import LogGPParams
 
 # Model loader (LogGP profiler)
 from .model_loader import (
-    load_loggp_params,
-    load_all_protocols,
+    get_layer_params,
     get_protocol_for_size,
-    load_hierarchical_loggp,
     is_hierarchical_model,
-    get_layer_params
+    load_all_protocols,
+    load_hierarchical_loggp,
+    load_loggp_params,
+)
+
+# Simulation engine
+from .simulator import SimulationResult, simulate
+from .topology import (
+    FullyConnectedTopology,
+    HierarchicalTopology,
+    NVLinkMeshTopology,
+    Resource,
+    RingTopology,
+    SwitchTopology,
+    Topology,
 )
 
 # Additional topologies (added in Phase 4)

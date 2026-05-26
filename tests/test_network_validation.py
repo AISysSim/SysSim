@@ -8,16 +8,28 @@ Target: <1e-5 relative error for all collectives (tolerance accounts for
 floating-point rounding in the (m-1)*G term of LogGP formula)
 """
 
-import pytest
 from syssim.network import (
-    allreduce, broadcast, reduce, reduce_scatter, allgather,
-    alltoall, scatter, gather,
-    FullyConnectedTopology, LogGPParams, simulate,
+    FullyConnectedTopology,
+    LogGPParams,
+    allgather,
+    allreduce,
+    alltoall,
+    broadcast,
+    gather,
+    reduce,
+    reduce_scatter,
+    scatter,
+    simulate,
 )
 from syssim.network.validation import (
-    validate_allreduce, validate_broadcast, validate_reduce,
-    validate_reduce_scatter, validate_allgather, validate_alltoall,
-    validate_scatter, validate_gather,
+    validate_allgather,
+    validate_allreduce,
+    validate_alltoall,
+    validate_broadcast,
+    validate_gather,
+    validate_reduce,
+    validate_reduce_scatter,
+    validate_scatter,
 )
 
 
@@ -28,15 +40,13 @@ class TestAnalyticalValidation:
         """AllReduce on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6  # 1 MB
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = allreduce(list(range(num_ranks)), total_size)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_allreduce(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_allreduce(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid, f"Error {error:.2e} exceeds tolerance (analytical={analytical:.6e})"
 
@@ -44,15 +54,13 @@ class TestAnalyticalValidation:
         """AllReduce on 8 ranks matches analytical formula."""
         num_ranks = 8
         total_size = 1e9  # 1 GB
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/100e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 100e9)
         topo = FullyConnectedTopology(num_ranks, 100e9)
 
         ops = allreduce(list(range(num_ranks)), total_size)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_allreduce(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_allreduce(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid, f"Error {error:.2e} exceeds tolerance"
         assert error < 1e-5
@@ -61,15 +69,13 @@ class TestAnalyticalValidation:
         """Broadcast on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6  # 1 MB
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = broadcast(list(range(num_ranks)), total_size, root=0)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_broadcast(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_broadcast(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid, f"Error {error:.2e} exceeds tolerance"
 
@@ -77,15 +83,13 @@ class TestAnalyticalValidation:
         """Broadcast on 8 ranks matches analytical formula."""
         num_ranks = 8
         total_size = 1e9
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/100e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 100e9)
         topo = FullyConnectedTopology(num_ranks, 100e9)
 
         ops = broadcast(list(range(num_ranks)), total_size, root=0)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_broadcast(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_broadcast(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid
         assert error < 1e-5
@@ -94,15 +98,13 @@ class TestAnalyticalValidation:
         """Reduce on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = reduce(list(range(num_ranks)), total_size, root=0)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_reduce(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_reduce(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid
         assert error < 1e-5
@@ -111,15 +113,13 @@ class TestAnalyticalValidation:
         """ReduceScatter on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = reduce_scatter(list(range(num_ranks)), total_size)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_reduce_scatter(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_reduce_scatter(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid
         assert error < 1e-5
@@ -128,15 +128,13 @@ class TestAnalyticalValidation:
         """AllGather on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = allgather(list(range(num_ranks)), total_size)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_allgather(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_allgather(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid
         assert error < 1e-5
@@ -145,15 +143,13 @@ class TestAnalyticalValidation:
         """AlltoAll on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = alltoall(list(range(num_ranks)), total_size)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_alltoall(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_alltoall(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid
         assert error < 1e-5
@@ -162,15 +158,13 @@ class TestAnalyticalValidation:
         """Scatter on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = scatter(list(range(num_ranks)), total_size, root=0)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_scatter(
-            num_ranks, total_size, loggp, result.makespan
-        )
+        is_valid, analytical, error = validate_scatter(num_ranks, total_size, loggp, result.makespan)
 
         assert is_valid
         assert error < 1e-5
@@ -179,15 +173,13 @@ class TestAnalyticalValidation:
         """Gather on 4 ranks matches analytical formula."""
         num_ranks = 4
         total_size = 1e6
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
         topo = FullyConnectedTopology(num_ranks, 1e9)
 
         ops = gather(list(range(num_ranks)), total_size, root=0)
         result = simulate(ops, topo, loggp)
 
-        is_valid, analytical, error = validate_gather(
-            num_ranks, total_size, loggp, 1e9, result.makespan
-        )
+        is_valid, analytical, error = validate_gather(num_ranks, total_size, loggp, 1e9, result.makespan)
 
         assert is_valid
         assert error < 1e-5
@@ -196,7 +188,7 @@ class TestAnalyticalValidation:
         """All collectives match analytical formulas on larger problem."""
         num_ranks = 16
         total_size = 1e9  # 1 GB
-        loggp = LogGPParams(L=2e-6, o=10e-6, G=1/25e9)
+        loggp = LogGPParams(L=2e-6, o=10e-6, G=1 / 25e9)
         topo = FullyConnectedTopology(num_ranks, 25e9)
 
         # Test each collective
@@ -220,9 +212,7 @@ class TestAnalyticalValidation:
             result = simulate(ops, topo, loggp)
 
             # Validate
-            is_valid, analytical, error = validate_fn(
-                num_ranks, total_size, loggp, result.makespan
-            )
+            is_valid, analytical, error = validate_fn(num_ranks, total_size, loggp, result.makespan)
 
             assert is_valid, f"{name} error {error:.2e} exceeds tolerance"
             assert error < 1e-5, f"{name} relative error too high"
@@ -230,9 +220,7 @@ class TestAnalyticalValidation:
         # Test gather separately (different signature)
         ops = gather(list(range(num_ranks)), total_size, root=0)
         result = simulate(ops, topo, loggp)
-        is_valid, analytical, error = validate_gather(
-            num_ranks, total_size, loggp, 25e9, result.makespan
-        )
+        is_valid, analytical, error = validate_gather(num_ranks, total_size, loggp, 25e9, result.makespan)
         assert is_valid and error < 1e-5
 
 
@@ -245,7 +233,7 @@ class TestContrast:
 
         num_ranks = 8
         total_size = 1e9
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/25e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 25e9)
 
         # Fully connected (no contention)
         topo_fc = FullyConnectedTopology(num_ranks, 25e9)
@@ -266,8 +254,8 @@ class TestContrast:
         """Inter-node communication is slower than intra-node on HierarchicalTopology."""
         from syssim.network import HierarchicalTopology
 
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(
             num_nodes=4,

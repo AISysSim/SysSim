@@ -32,5 +32,5 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev,profiler]"
-      - name: Run tests (CPU-only, skip CUDA tests)
-        run: pytest -m "not cuda" --tb=short -q
+      - name: Run tests (CPU-only, skip CUDA and PLENA tests)
+        run: pytest -m "not cuda and not plena" --tb=short -q

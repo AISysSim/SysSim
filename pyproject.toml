@@ -34,6 +34,11 @@ profiler = [
     "scikit-learn",
     "xgboost",
 ]
+# FP8/FP4 GEMM + attention kernels (Blackwell). CUDA-only wheel; install separately.
+profiler-lowp = [
+    "syssim[profiler]",
+    "flashinfer-python>=0.6",
+]
 huggingface = [
     "transformers",
 ]
@@ -44,13 +49,16 @@ diffusers = [
 megatron = [
     "megatron-core",
 ]
+# PLENA accelerator backend. Requires the PLENA_Simulator git submodule
+# to be initialized (`git submodule update --init --recursive`).
+plena = []
 dev = [
     "pytest",
     "pytest-cov",
     "ruff",
 ]
 all = [
-    "syssim[profiler,huggingface,diffusers,megatron,dev]",
+    "syssim[profiler,huggingface,diffusers,megatron,plena,dev]",
 ]
 
 [project.urls]
@@ -71,8 +79,15 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
+[tool.ruff.lint.per-file-ignores]
+# __init__.py re-exports are intentional (public API surface)
+"__init__.py" = ["F401"]
+# Standalone scripts may need late imports after sys.path manipulation
+"syssim/compute/validate_profiler.py" = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
     "cuda: marks tests that require CUDA (deselect with '-m \"not cuda\"')",
+    "plena: marks tests that require the PLENA_Simulator submodule (deselect with '-m \"not plena\"')",
 ]

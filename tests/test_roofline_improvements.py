@@ -9,8 +9,8 @@ Tests verify:
 Note: GPU utilization model is NOT included as roofline should be an analytical ceiling.
 """
 
-import torch
 import pytest
+import torch
 
 from syssim.compute.compute_cost_predictor import roofline_estimate
 from syssim.config import HardwareInfo
@@ -21,11 +21,17 @@ aten = torch.ops.aten
 
 @pytest.fixture
 def hw_info():
-    """Standard GH200 hardware configuration."""
+    """GH200 hardware with distinct conservative peak for small ops.
+
+    `peak_tflops_mm_conservative` < `peak_tflops_mm` models the reduced
+    throughput on small ops where kernel launch overhead and partial
+    tensor-core occupancy dominate.
+    """
     return HardwareInfo(
-        peak_tflops_mm=535.3,  # TFLOP/s
+        peak_tflops_mm=535.3,  # TFLOP/s — large-op tensor unit peak
         peak_tflops_math=535.3,
         peak_memory_bandwidth_gbps=4022.8,  # GB/s
+        peak_tflops_mm_conservative=100.0,  # Small-op effective peak
     )
 
 
@@ -39,9 +45,7 @@ class TestFlopBugFix:
         b = torch.randn(K, N, dtype=torch.float32)
         out = torch.randn(M, N, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         # Find the math constraint
         math_constraint = None
@@ -59,7 +63,7 @@ class TestFlopBugFix:
         )
 
         # Verify compute time matches expected formula
-        peak_flops = hw_info.get_peak_flops(OperatorType.GEMM, torch.float32) * 1e15
+        peak_flops = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32, is_large_op=True) * 1e12
         # Note: with GPU utilization, effective FLOPS may be lower
         # Just verify it's computed from the correct FLOP count
         min_expected_compute_ns = (expected_flops / peak_flops) * 1e9
@@ -67,12 +71,10 @@ class TestFlopBugFix:
 
         # Should be >= ideal time (due to utilization factor)
         assert compute_time_ns >= min_expected_compute_ns * 0.99, (
-            f"Compute time {compute_time_ns:.0f}ns should be >= "
-            f"ideal {min_expected_compute_ns:.0f}ns"
+            f"Compute time {compute_time_ns:.0f}ns should be >= ideal {min_expected_compute_ns:.0f}ns"
         )
 
-        print(f"✓ FLOP /2 bug fixed: {expected_flops} FLOPs, "
-              f"{compute_time_ns:.0f}ns compute time")
+        print(f"✓ FLOP /2 bug fixed: {expected_flops} FLOPs, {compute_time_ns:.0f}ns compute time")
 
     def test_small_matrix_has_correct_flops(self, hw_info):
         """Small matrices should also use correct FLOP count."""
@@ -81,9 +83,7 @@ class TestFlopBugFix:
         b = torch.randn(K, N, dtype=torch.float32)
         out = torch.randn(M, N, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
         expected_flops = 2 * M * N * K
@@ -100,9 +100,7 @@ class TestMemoryLatency:
         b = torch.randn(M, M, dtype=torch.float32)
         out = torch.randn(M, M, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         # Find memory constraint
         mem_constraint = next(c for c in result.constraints if c.work_type == "memory")
@@ -117,56 +115,61 @@ class TestMemoryLatency:
             f"Should add latency: {actual_transfer_ns:.0f}ns > {ideal_transfer_ns:.0f}ns"
         )
 
-        print(f"✓ Memory latency added: {actual_transfer_ns:.0f}ns vs "
-              f"ideal {ideal_transfer_ns:.0f}ns")
+        print(f"✓ Memory latency added: {actual_transfer_ns:.0f}ns vs ideal {ideal_transfer_ns:.0f}ns")
 
 
-class TestKernelLaunchOverhead:
-    """Test 1.3: Verify kernel launch overhead is added."""
+class TestConservativePeakForSmallOps:
+    """Test 1.3: Small ops use the conservative peak (replaces fixed-7μs launch overhead model).
 
-    def test_launch_overhead_present(self, hw_info):
-        """All operations should include ~7μs launch overhead."""
+    The current model captures launch overhead and partial tensor-core occupancy
+    by applying `peak_tflops_mm_conservative` (lower throughput) to small ops.
+    """
+
+    def test_small_op_uses_conservative_peak(self, hw_info):
+        """Small ops compute time should be derived from the conservative peak."""
         M = 8
         a = torch.randn(M, M, dtype=torch.float32)
         out = torch.randn(M, M, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM
+        result = roofline_estimate(aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM)
+
+        math_constraint = next(c for c in result.constraints if c.work_type == "math")
+        actual_compute_ns = math_constraint.time_ms * 1e6
+
+        flops = 2 * M * M * M
+        # If model used the full peak, compute would be flops / 535.3 TFLOP/s
+        ideal_full_peak_ns = (flops / (hw_info.peak_tflops_mm * 1e12)) * 1e9
+        # With conservative peak, it should be flops / 100 TFLOP/s — substantially slower
+        ideal_conservative_ns = (flops / (hw_info.peak_tflops_mm_conservative * 1e12)) * 1e9
+
+        assert actual_compute_ns > ideal_full_peak_ns * 1.5, (
+            f"Small op should not use full peak: actual={actual_compute_ns:.2f}ns, "
+            f"full-peak ideal={ideal_full_peak_ns:.2f}ns"
+        )
+        assert actual_compute_ns >= ideal_conservative_ns * 0.99, (
+            f"Small op should use conservative peak: actual={actual_compute_ns:.2f}ns, "
+            f"conservative ideal={ideal_conservative_ns:.2f}ns"
         )
 
-        # For tiny ops, launch overhead should be significant
-        t_roofline_ms = result.t_roofline_ms
-        t_roofline_us = t_roofline_ms * 1000
-
-        # Should include at least 5μs overhead (7μs typical)
-        assert t_roofline_us > 5.0, (
-            f"Should include launch overhead: {t_roofline_us:.2f}μs > 5μs"
-        )
-
-        print(f"✓ Kernel launch overhead present: {t_roofline_us:.2f}μs total time")
-
-    def test_launch_overhead_dominates_tiny_ops(self, hw_info):
-        """For very tiny ops, launch overhead should dominate."""
-        M = 4
+    def test_large_op_uses_full_peak(self, hw_info):
+        """Large ops should use the full tensor-unit peak."""
+        M = 1024
         a = torch.randn(M, M, dtype=torch.float16)
         out = torch.randn(M, M, dtype=torch.float16)
 
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM)
 
-        # Compute constraint should be tiny (< 0.1μs ideal)
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
-        compute_time_us = math_constraint.time_ms * 1000
+        actual_compute_ns = math_constraint.time_ms * 1e6
 
-        # But total time should be >= 7μs due to launch overhead
-        total_time_us = result.t_roofline_ms * 1000
-        assert total_time_us >= 6.0, (
-            f"Launch overhead should dominate: {total_time_us:.2f}μs total"
+        flops = 2 * M * M * M
+        ideal_full_peak_ns = (flops / (hw_info.peak_tflops_mm * 1e12)) * 1e9
+
+        # Within 5% of full-peak ideal (no conservative penalty)
+        assert actual_compute_ns <= ideal_full_peak_ns * 1.05, (
+            f"Large op should be near full peak: actual={actual_compute_ns:.2f}ns, "
+            f"full-peak ideal={ideal_full_peak_ns:.2f}ns"
         )
-
-        print(f"✓ Launch overhead dominates tiny ops: "
-              f"{compute_time_us:.3f}μs compute, {total_time_us:.2f}μs total")
 
 
 class TestCacheMissPenalty:
@@ -179,9 +182,7 @@ class TestCacheMissPenalty:
         b = torch.randn(M, M, dtype=torch.float32)
         out = torch.randn(M, M, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
 
         # Find memory constraint
         mem_constraint = next(c for c in result.constraints if c.work_type == "memory")
@@ -205,9 +206,7 @@ class TestCacheMissPenalty:
         a = torch.randn(M, M, dtype=torch.float32)
         out = torch.randn(M, M, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM)
 
         mem_constraint = next(c for c in result.constraints if c.work_type == "memory")
 
@@ -219,9 +218,7 @@ class TestCacheMissPenalty:
         cache_multiplier = actual_transfer_ns / ideal_transfer_ns
 
         # Should be close to 1.0 (good cache reuse) or slightly higher
-        assert cache_multiplier < 2.0, (
-            f"Small high-intensity op should have good cache: {cache_multiplier:.2f}x"
-        )
+        assert cache_multiplier < 2.0, f"Small high-intensity op should have good cache: {cache_multiplier:.2f}x"
 
         print(f"✓ Good cache reuse for small GEMM: {cache_multiplier:.2f}x")
 
@@ -235,28 +232,22 @@ class TestGPUUtilization:
         a = torch.randn(M, M, dtype=torch.float32)
         out = torch.randn(M, M, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM)
 
         # Find math constraint
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
 
         # Calculate ideal compute time (100% utilization)
         flops = 2 * M * M * M
-        peak_flops = hw_info.get_peak_flops(OperatorType.GEMM, torch.float32) * 1e15
+        peak_flops = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32, is_large_op=True) * 1e12
         ideal_compute_ns = (flops / peak_flops) * 1e9
 
         # Actual compute time should be higher due to low utilization
         actual_compute_ns = math_constraint.time_ms * 1e6
         utilization = ideal_compute_ns / actual_compute_ns
 
-        assert utilization < 0.9, (
-            f"Tiny ops should have low utilization: {utilization:.2%}"
-        )
-        assert utilization >= 0.1, (
-            f"Utilization should be >= 10%: {utilization:.2%}"
-        )
+        assert utilization < 0.9, f"Tiny ops should have low utilization: {utilization:.2%}"
+        assert utilization >= 0.1, f"Utilization should be >= 10%: {utilization:.2%}"
 
         print(f"✓ Tiny ops have low GPU utilization: {utilization:.2%}")
 
@@ -266,24 +257,20 @@ class TestGPUUtilization:
         a = torch.randn(M, M, dtype=torch.float32)
         out = torch.randn(M, M, dtype=torch.float32)
 
-        result = roofline_estimate(
-            aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM
-        )
+        result = roofline_estimate(aten.mm, (a, a), {}, out, hw_info, OperatorType.GEMM)
 
         math_constraint = next(c for c in result.constraints if c.work_type == "math")
 
         # Calculate ideal compute time
         flops = 2 * M * M * M
-        peak_flops = hw_info.get_peak_flops(OperatorType.GEMM, torch.float32) * 1e15
+        peak_flops = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32, is_large_op=True) * 1e12
         ideal_compute_ns = (flops / peak_flops) * 1e9
 
         # Actual should be very close to ideal (high utilization)
         actual_compute_ns = math_constraint.time_ms * 1e6
         utilization = ideal_compute_ns / actual_compute_ns
 
-        assert utilization >= 0.95, (
-            f"Large ops should have high utilization: {utilization:.2%}"
-        )
+        assert utilization >= 0.95, f"Large ops should have high utilization: {utilization:.2%}"
 
         print(f"✓ Large ops have high GPU utilization: {utilization:.2%}")
 
@@ -301,9 +288,7 @@ class TestIntegration:
 
         for M in sizes:
             a = torch.randn(M, M, dtype=torch.float16)
-            result = roofline_estimate(
-                aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM
-            )
+            result = roofline_estimate(aten.mm, (a, a), {}, a, hw_info, OperatorType.GEMM)
 
             math_c = next((c for c in result.constraints if c.work_type == "math"), None)
             mem_c = next((c for c in result.constraints if c.work_type == "memory"), None)
@@ -314,8 +299,7 @@ class TestIntegration:
 
             dominant = "compute" if compute_us > memory_us else "memory"
 
-            print(f"{M:4d}×{M:<3d} | {total_us:9.2f} μs | "
-                  f"{compute_us:6.2f}μs | {memory_us:6.2f}μs | {dominant}")
+            print(f"{M:4d}×{M:<3d} | {total_us:9.2f} μs | {compute_us:6.2f}μs | {memory_us:6.2f}μs | {dominant}")
 
             # Verify all times are positive
             assert result.t_roofline_ms > 0, "Roofline time should be positive"
@@ -326,19 +310,15 @@ class TestIntegration:
         small = torch.randn(8, 8, dtype=torch.float32)
         large = torch.randn(4096, 4096, dtype=torch.float32)
 
-        result_small = roofline_estimate(
-            aten.mm, (small, small), {}, small, hw_info, OperatorType.GEMM
-        )
-        result_large = roofline_estimate(
-            aten.mm, (large, large), {}, large, hw_info, OperatorType.GEMM
-        )
+        result_small = roofline_estimate(aten.mm, (small, small), {}, small, hw_info, OperatorType.GEMM)
+        result_large = roofline_estimate(aten.mm, (large, large), {}, large, hw_info, OperatorType.GEMM)
 
         # Get math constraints
         small_compute = next(c for c in result_small.constraints if c.work_type == "math")
         large_compute = next(c for c in result_large.constraints if c.work_type == "math")
 
         # Calculate utilization by comparing actual vs ideal compute time
-        peak_flops = hw_info.get_peak_flops(OperatorType.GEMM, torch.float32) * 1e15
+        peak_flops = hw_info.get_peak_tflops(OperatorType.GEMM, torch.float32, is_large_op=True) * 1e12
 
         small_flops = small_compute.work_amount
         large_flops = large_compute.work_amount
@@ -357,12 +337,10 @@ class TestIntegration:
 
         # Large matrix should have higher utilization
         assert large_util > small_util, (
-            f"Large matrix should have higher utilization: "
-            f"{large_util:.2%} > {small_util:.2%}"
+            f"Large matrix should have higher utilization: {large_util:.2%} > {small_util:.2%}"
         )
 
-        print(f"✓ Larger matrices have higher utilization: "
-              f"{large_util:.2%} vs {small_util:.2%}")
+        print(f"✓ Larger matrices have higher utilization: {large_util:.2%} vs {small_util:.2%}")
 
 
 if __name__ == "__main__":

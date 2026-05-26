@@ -27,22 +27,24 @@ References:
 
 import argparse
 import json
+import sys
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Union, Optional
-import sys
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
 from .protocol_detector import (
-    PRTTMeasurement,
     ProtocolRange,
+    PRTTMeasurement,
     detect_protocol_changes,
-    compute_gall,
 )
+
+if TYPE_CHECKING:
+    from .device_mesh import DeviceMesh
 
 
 @dataclass
@@ -55,6 +57,7 @@ class ProfilingResult:
         primary: Primary protocol parameters (usually first/smallest protocol)
         metadata: Profiling metadata (timestamp, hardware, num_protocols, etc.)
     """
+
     topology: str
     protocols: List[Dict[str, Any]]
     primary: Dict[str, float]
@@ -73,12 +76,13 @@ class LayerConfig:
         description: Human-readable description of this layer
         expected_bandwidth_gbs: Optional bandwidth hint for validation
     """
+
     topology_type: str
     scope: Dict[str, Any]  # REQUIRED: {"vary_dims": [...], "fix_dims": {...}}
     description: str = ""
     expected_bandwidth_gbs: Optional[float] = None
 
-    def get_rank_pairs(self, mesh: 'DeviceMesh') -> List[Tuple[int, int]]:
+    def get_rank_pairs(self, mesh: "DeviceMesh") -> List[Tuple[int, int]]:
         """Get rank pairs for profiling from mesh and scope.
 
         Args:
@@ -93,9 +97,7 @@ class LayerConfig:
         from .device_mesh import DeviceMesh
 
         if not isinstance(mesh, DeviceMesh):
-            raise ValueError(
-                f"mesh argument must be DeviceMesh instance, got {type(mesh).__name__}"
-            )
+            raise ValueError(f"mesh argument must be DeviceMesh instance, got {type(mesh).__name__}")
 
         vary_dims = self.scope.get("vary_dims", [])
         fix_dims = self.scope.get("fix_dims", {})
@@ -112,13 +114,11 @@ class LayerConfig:
         # Validate: vary_dims must exist in mesh
         for dim_name in vary_dims:
             if dim_name not in mesh.dimension_names:
-                raise ValueError(
-                    f"vary_dims contains '{dim_name}' not in mesh.dimension_names {mesh.dimension_names}"
-                )
+                raise ValueError(f"vary_dims contains '{dim_name}' not in mesh.dimension_names {mesh.dimension_names}")
 
         return mesh.get_representative_pairs(fix_dims, vary_dims, num_pairs)
 
-    def get_all_ranks(self, mesh: 'DeviceMesh') -> List[int]:
+    def get_all_ranks(self, mesh: "DeviceMesh") -> List[int]:
         """Get all ranks participating in this layer.
 
         Args:
@@ -127,7 +127,6 @@ class LayerConfig:
         Returns:
             List of all ranks in the layer's scope
         """
-        from .device_mesh import DeviceMesh
 
         vary_dims = self.scope.get("vary_dims", [])
         fix_dims = self.scope.get("fix_dims", {})
@@ -146,11 +145,12 @@ class HierarchyConfig:
         mesh: REQUIRED mesh specification with topology_types
         profiling_params: Profiling parameters (min_size, max_size, num_runs, etc.)
     """
+
     topology_name: str
     mesh: Dict[str, Any]  # REQUIRED: {"shape": [...], "dimension_names": [...], "topology_types": [...]}
     profiling_params: Dict[str, Any]
 
-    def get_device_mesh(self) -> 'DeviceMesh':
+    def get_device_mesh(self) -> "DeviceMesh":
         """Parse mesh dict into DeviceMesh object.
 
         Returns:
@@ -174,7 +174,7 @@ class HierarchyConfig:
             shape=tuple(self.mesh["shape"]),
             dimension_names=self.mesh["dimension_names"],
             topology_types=self.mesh["topology_types"],
-            ranks_order=self.mesh.get("ranks_order", "C")
+            ranks_order=self.mesh.get("ranks_order", "C"),
         )
 
     def get_auto_layers(self) -> Dict[str, LayerConfig]:
@@ -195,16 +195,9 @@ class HierarchyConfig:
 
             # Build scope: vary this dimension, fix all others to 0
             vary_dims = [dim_name]
-            fix_dims = {
-                other_dim: 0
-                for i, other_dim in enumerate(mesh.dimension_names)
-                if i != dim_idx
-            }
+            fix_dims = {other_dim: 0 for i, other_dim in enumerate(mesh.dimension_names) if i != dim_idx}
 
-            layer = LayerConfig(
-                topology_type=topology_type,
-                scope={"vary_dims": vary_dims, "fix_dims": fix_dims}
-            )
+            layer = LayerConfig(topology_type=topology_type, scope={"vary_dims": vary_dims, "fix_dims": fix_dims})
 
             layers[dim_name] = layer
 
@@ -239,6 +232,7 @@ class LayerProfilingResult:
         primary: Primary protocol parameters
         metadata: Layer-specific metadata
     """
+
     name: str
     topology_type: str
     ranks: List[int]
@@ -257,6 +251,7 @@ class HierarchicalProfilingResult:
         layers: Dict mapping layer name to LayerProfilingResult
         metadata: Global metadata (timestamp, total_profiling_time_s, etc.)
     """
+
     topology_name: str
     description: str
     layers: Dict[str, LayerProfilingResult]
@@ -348,8 +343,9 @@ class NCCLBackend(CommBackend):
         # In multi-node setup: rank 0 on node 0 uses GPU 0, rank 1 on node 1 uses GPU 0
         # In single-node setup: rank 0 uses GPU 0, rank 1 uses GPU 1
         import os
-        local_rank = int(os.environ.get('LOCAL_RANK', self.rank))
-        self.device = torch.device(f'cuda:{local_rank}')
+
+        local_rank = int(os.environ.get("LOCAL_RANK", self.rank))
+        self.device = torch.device(f"cuda:{local_rank}")
         torch.cuda.set_device(self.device)
 
         self.torch = torch
@@ -440,12 +436,7 @@ class NCCLBackend(CommBackend):
 
 
 def measure_prtt(
-    backend: CommBackend,
-    n: int,
-    delay: float,
-    size: int,
-    num_runs: int = 10,
-    peer_rank: Optional[int] = None
+    backend: CommBackend, n: int, delay: float, size: int, num_runs: int = 10, peer_rank: Optional[int] = None
 ) -> float:
     """Measure PRTT with statistical sampling.
 
@@ -499,7 +490,7 @@ def sweep_message_sizes(
     max_size: int = 65536,
     n: int = 10,
     num_runs: int = 10,
-    peer_rank: Optional[int] = None
+    peer_rank: Optional[int] = None,
 ) -> List[PRTTMeasurement]:
     """Sweep message sizes and measure PRTT(1,0,s), PRTT(n,0,s), PRTT(n,dG,s).
 
@@ -535,7 +526,7 @@ def sweep_message_sizes(
 
     if is_client_rank:
         print(f"Measuring PRTT for {len(sizes)} message sizes: {sizes[0]} to {sizes[-1]} bytes")
-        print(f"Progress: ", end='', flush=True)
+        print("Progress: ", end="", flush=True)
 
     for i, size in enumerate(sizes):
         # Measure PRTT(1, 0, size)
@@ -551,16 +542,11 @@ def sweep_message_sizes(
         prtt_n_dG = measure_prtt(backend, n=n, delay=dG, size=size, num_runs=num_runs, peer_rank=peer_rank)
 
         if is_client_rank:
-            measurements.append(PRTTMeasurement(
-                size=size,
-                prtt_1_0=prtt_1_0,
-                prtt_n_0=prtt_n_0,
-                prtt_n_dG=prtt_n_dG
-            ))
+            measurements.append(PRTTMeasurement(size=size, prtt_1_0=prtt_1_0, prtt_n_0=prtt_n_0, prtt_n_dG=prtt_n_dG))
 
             # Progress indicator
             if (i + 1) % max(1, len(sizes) // 10) == 0 or i == len(sizes) - 1:
-                print(f"{i+1}/{len(sizes)} ", end='', flush=True)
+                print(f"{i + 1}/{len(sizes)} ", end="", flush=True)
 
     if is_client_rank:
         print()  # Newline after progress
@@ -569,9 +555,7 @@ def sweep_message_sizes(
 
 
 def extract_loggp_parameters(
-    measurements: List[PRTTMeasurement],
-    protocol: ProtocolRange,
-    n: int = 10
+    measurements: List[PRTTMeasurement], protocol: ProtocolRange, n: int = 10
 ) -> Tuple[float, float, float, float]:
     """Extract L, o, g, G from PRTT measurements for a single protocol.
 
@@ -590,7 +574,7 @@ def extract_loggp_parameters(
         Tuple of (L, o, g, G) in seconds/seconds/seconds/seconds per byte
     """
     # Extract measurements for this protocol
-    protocol_measurements = measurements[protocol.start_idx:protocol.end_idx + 1]
+    protocol_measurements = measurements[protocol.start_idx : protocol.end_idx + 1]
 
     if not protocol_measurements:
         raise ValueError("No measurements in protocol range")
@@ -612,7 +596,7 @@ def extract_loggp_parameters(
     # Compute L from PRTT(1, 0, s) = 2 * (L + 2*o + g + (s-1)*G)
     Ls = []
     for m in protocol_measurements:
-        L_s = (m.prtt_1_0 / 2.0) - 2*o - g - (m.size - 1)*G
+        L_s = (m.prtt_1_0 / 2.0) - 2 * o - g - (m.size - 1) * G
         Ls.append(L_s)
 
     # Use median for robustness
@@ -636,7 +620,7 @@ def save_profiling_result(result: ProfilingResult, output_path: Path):
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(asdict(result), f, indent=2)
 
 
@@ -668,15 +652,14 @@ def load_hierarchy_config(path: Union[str, Path]) -> HierarchyConfig:
     required_fields = ["topology_name", "mesh"]
     for field in required_fields:
         if field not in data:
-            raise ValueError(
-                f"Missing '{field}' field in {path}. "
-                f"Required fields: {required_fields}"
-            )
+            raise ValueError(f"Missing '{field}' field in {path}. Required fields: {required_fields}")
 
     # Load profiling_params from default file if not provided
     if "profiling_params" not in data:
         # Try to load default profiling params
-        default_params_path = Path(__file__).parent.parent.parent / "examples" / "configs" / "default_profiling_params.json"
+        default_params_path = (
+            Path(__file__).parent.parent.parent / "examples" / "configs" / "default_profiling_params.json"
+        )
         if default_params_path.exists():
             with open(default_params_path) as f:
                 data["profiling_params"] = json.load(f)
@@ -687,7 +670,7 @@ def load_hierarchy_config(path: Union[str, Path]) -> HierarchyConfig:
                 "max_size": 2147483648,
                 "num_runs": 10,
                 "lookahead": 5,
-                "pfact": 3.0
+                "pfact": 3.0,
             }
 
     # Validate mesh structure
@@ -698,9 +681,7 @@ def load_hierarchy_config(path: Union[str, Path]) -> HierarchyConfig:
             raise ValueError(f"mesh must contain '{field}' field in {path}")
 
     config = HierarchyConfig(
-        topology_name=data["topology_name"],
-        mesh=mesh_data,
-        profiling_params=data["profiling_params"]
+        topology_name=data["topology_name"], mesh=mesh_data, profiling_params=data["profiling_params"]
     )
 
     # Validate config (checks mesh/layer consistency)
@@ -723,7 +704,7 @@ def save_hierarchical_result(result: HierarchicalProfilingResult, output_path: P
         "topology_name": result.topology_name,
         "description": result.description,
         "layers": {},
-        "metadata": result.metadata
+        "metadata": result.metadata,
     }
 
     # Convert each LayerProfilingResult to dict
@@ -733,19 +714,15 @@ def save_hierarchical_result(result: HierarchicalProfilingResult, output_path: P
             "ranks": layer_result.ranks,
             "protocols": layer_result.protocols,
             "primary": layer_result.primary,
-            "metadata": layer_result.metadata
+            "metadata": layer_result.metadata,
         }
 
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(data, f, indent=2)
 
 
 def profile_single_layer(
-    layer_name: str,
-    layer: LayerConfig,
-    backend: NCCLBackend,
-    mesh: 'DeviceMesh',
-    profiling_params: Dict[str, Any]
+    layer_name: str, layer: LayerConfig, backend: NCCLBackend, mesh: "DeviceMesh", profiling_params: Dict[str, Any]
 ) -> Optional[LayerProfilingResult]:
     """Profile a single network layer (mesh-based).
 
@@ -759,7 +736,6 @@ def profile_single_layer(
     Returns:
         LayerProfilingResult if this rank involved, None otherwise
     """
-    from .device_mesh import DeviceMesh
 
     # Get all ranks participating in this layer from mesh
     all_ranks = layer.get_all_ranks(mesh)
@@ -806,16 +782,13 @@ def profile_single_layer(
         max_size=profiling_params.get("max_size", 65536),
         n=10,
         num_runs=profiling_params.get("num_runs", 10),
-        peer_rank=dst if backend.rank == src else src
+        peer_rank=dst if backend.rank == src else src,
     )
 
     # Detect protocol changes (client only)
     if is_client and measurements:
         protocols = detect_protocol_changes(
-            measurements,
-            n=10,
-            lookahead=profiling_params.get("lookahead", 3),
-            pfact=profiling_params.get("pfact", 2.0)
+            measurements, n=10, lookahead=profiling_params.get("lookahead", 3), pfact=profiling_params.get("pfact", 2.0)
         )
 
         print(f"\nDetected {len(protocols)} protocol(s) for layer '{layer_name}':")
@@ -828,24 +801,18 @@ def profile_single_layer(
             size_min = protocol.sizes[0]
             size_max = protocol.sizes[-1]
 
-            protocol_dict = {
-                "size_range": [size_min, size_max],
-                "L": L,
-                "o": o,
-                "g": g,
-                "G": G
-            }
+            protocol_dict = {"size_range": [size_min, size_max], "L": L, "o": o, "g": g, "G": G}
             protocol_dicts.append(protocol_dict)
 
             print(f"  Protocol {i}: {size_min}-{size_max} bytes")
-            print(f"    L={L*1e6:.2f}μs, o={o*1e6:.2f}μs, g={g*1e6:.2f}μs, G={G*1e9:.2f}ns/byte")
+            print(f"    L={L * 1e6:.2f}μs, o={o * 1e6:.2f}μs, g={g * 1e6:.2f}μs, G={G * 1e9:.2f}ns/byte")
 
         # Primary protocol is first
         primary = {
             "L": protocol_dicts[0]["L"],
             "o": protocol_dicts[0]["o"],
             "g": protocol_dicts[0]["g"],
-            "G": protocol_dicts[0]["G"]
+            "G": protocol_dicts[0]["G"],
         }
 
         # Build metadata (include mesh scope info)
@@ -853,10 +820,7 @@ def profile_single_layer(
             "timestamp": datetime.now().isoformat(),
             "rank_pairs_used": [list(active_pair)],
             "median_bandwidth_gbs": 1.0 / primary["G"] / 1e9 if primary["G"] > 0 else 0.0,
-            "mesh_scope": {
-                "vary_dims": layer.scope.get("vary_dims", []),
-                "fix_dims": layer.scope.get("fix_dims", {})
-            }
+            "mesh_scope": {"vary_dims": layer.scope.get("vary_dims", []), "fix_dims": layer.scope.get("fix_dims", {})},
         }
 
         # Check against expected bandwidth if provided
@@ -864,8 +828,10 @@ def profile_single_layer(
             actual_bw = metadata["median_bandwidth_gbs"]
             expected_bw = layer.expected_bandwidth_gbs
             if abs(actual_bw - expected_bw) / expected_bw > 2.0:  # More than 2x difference
-                print(f"  WARNING: Measured bandwidth {actual_bw:.1f} GB/s differs from "
-                      f"expected {expected_bw:.1f} GB/s by >2x")
+                print(
+                    f"  WARNING: Measured bandwidth {actual_bw:.1f} GB/s differs from "
+                    f"expected {expected_bw:.1f} GB/s by >2x"
+                )
 
         result = LayerProfilingResult(
             name=layer_name,
@@ -873,7 +839,7 @@ def profile_single_layer(
             ranks=all_ranks,  # All ranks from mesh slice
             protocols=protocol_dicts,
             primary=primary,
-            metadata=metadata
+            metadata=metadata,
         )
 
         # Synchronize before next layer
@@ -886,10 +852,7 @@ def profile_single_layer(
         return None
 
 
-def profile_hierarchy(
-    config: HierarchyConfig,
-    backend: NCCLBackend
-) -> Optional[HierarchicalProfilingResult]:
+def profile_hierarchy(config: HierarchyConfig, backend: NCCLBackend) -> Optional[HierarchicalProfilingResult]:
     """Profile all layers in hierarchy sequentially (mesh-based).
 
     Args:
@@ -907,13 +870,13 @@ def profile_hierarchy(
     layers = config.get_auto_layers()
 
     if backend.rank == 0:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Profiling hierarchical topology: {config.topology_name}")
         print(f"Device mesh: {mesh}")
         print(f"Auto-generated layers: {len(layers)}")
         for dim_name, layer in layers.items():
             print(f"  {dim_name}: {layer.topology_type}")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
     for layer_name, layer in layers.items():
         result = profile_single_layer(layer_name, layer, backend, mesh, config.profiling_params)
@@ -936,24 +899,22 @@ def profile_hierarchy(
                 "shape": list(mesh.shape),
                 "dimension_names": mesh.dimension_names,
                 "total_ranks": mesh.total_ranks,
-                "ranks_order": mesh.ranks_order
-            }
+                "ranks_order": mesh.ranks_order,
+            },
         }
 
         # Try to get hardware info
         try:
             import torch
+
             if torch.cuda.is_available():
                 metadata["gpu"] = torch.cuda.get_device_name(0)
                 metadata["num_gpus"] = torch.cuda.device_count()
-        except:
+        except Exception:
             pass
 
         return HierarchicalProfilingResult(
-            topology_name=config.topology_name,
-            description=config.description,
-            layers=layer_results,
-            metadata=metadata
+            topology_name=config.topology_name, description=config.description, layers=layer_results, metadata=metadata
         )
     else:
         return None
@@ -975,7 +936,7 @@ def run_profiling(args: argparse.Namespace, backend: CommBackend) -> ProfilingRe
         min_size=args.min_size,
         max_size=args.max_size,
         n=10,  # Fixed n=10 for PRTT measurements
-        num_runs=args.num_runs
+        num_runs=args.num_runs,
     )
 
     if not backend.is_client():
@@ -983,12 +944,7 @@ def run_profiling(args: argparse.Namespace, backend: CommBackend) -> ProfilingRe
         return None
 
     # Detect protocol changes
-    protocols = detect_protocol_changes(
-        measurements,
-        n=10,
-        lookahead=args.lookahead,
-        pfact=args.pfact
-    )
+    protocols = detect_protocol_changes(measurements, n=10, lookahead=args.lookahead, pfact=args.pfact)
 
     print(f"\nDetected {len(protocols)} protocol(s):")
 
@@ -1001,24 +957,18 @@ def run_profiling(args: argparse.Namespace, backend: CommBackend) -> ProfilingRe
         size_min = protocol.sizes[0]
         size_max = protocol.sizes[-1]
 
-        protocol_dict = {
-            "size_range": [size_min, size_max],
-            "L": L,
-            "o": o,
-            "g": g,
-            "G": G
-        }
+        protocol_dict = {"size_range": [size_min, size_max], "L": L, "o": o, "g": g, "G": G}
         protocol_dicts.append(protocol_dict)
 
         print(f"  Protocol {i}: {size_min}-{size_max} bytes")
-        print(f"    L={L*1e6:.2f}μs, o={o*1e6:.2f}μs, g={g*1e6:.2f}μs, G={G*1e9:.2f}ns/byte")
+        print(f"    L={L * 1e6:.2f}μs, o={o * 1e6:.2f}μs, g={g * 1e6:.2f}μs, G={G * 1e9:.2f}ns/byte")
 
     # Primary protocol is first (smallest messages, usually eager)
     primary = {
         "L": protocol_dicts[0]["L"],
         "o": protocol_dicts[0]["o"],
         "g": protocol_dicts[0]["g"],
-        "G": protocol_dicts[0]["G"]
+        "G": protocol_dicts[0]["G"],
     }
 
     # Build metadata
@@ -1035,18 +985,14 @@ def run_profiling(args: argparse.Namespace, backend: CommBackend) -> ProfilingRe
     # Try to get hardware info
     try:
         import torch
+
         if torch.cuda.is_available():
             metadata["gpu"] = torch.cuda.get_device_name(0)
             metadata["num_gpus"] = torch.cuda.device_count()
-    except:
+    except Exception:
         pass
 
-    return ProfilingResult(
-        topology=args.topology,
-        protocols=protocol_dicts,
-        primary=primary,
-        metadata=metadata
-    )
+    return ProfilingResult(topology=args.topology, protocols=protocol_dicts, primary=primary, metadata=metadata)
 
 
 def main():
@@ -1069,56 +1015,26 @@ Examples:
 
   # SLURM cluster
   srun --nodes=2 --gpus-per-node=2 python -m syssim.network.profiler --topology infiniband
-        """
+        """,
     )
 
     parser.add_argument(
-        "--topology",
-        required=False,
-        help="Topology type for single-layer profiling (e.g., nvlink, infiniband, custom)"
+        "--topology", required=False, help="Topology type for single-layer profiling (e.g., nvlink, infiniband, custom)"
     )
     parser.add_argument(
         "--hierarchy-config",
         type=str,
         default=None,
-        help="Path to hierarchy config JSON for multi-layer profiling (overrides --topology)"
+        help="Path to hierarchy config JSON for multi-layer profiling (overrides --topology)",
     )
     parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Output path (default: data/network_models/{topology}_loggp.json)"
+        "--output", type=str, default=None, help="Output path (default: data/network_models/{topology}_loggp.json)"
     )
-    parser.add_argument(
-        "--min-size",
-        type=int,
-        default=1,
-        help="Minimum message size in bytes (default: 1)"
-    )
-    parser.add_argument(
-        "--max-size",
-        type=int,
-        default=65536,
-        help="Maximum message size in bytes (default: 65536)"
-    )
-    parser.add_argument(
-        "--num-runs",
-        type=int,
-        default=10,
-        help="Number of measurement runs per size (default: 10)"
-    )
-    parser.add_argument(
-        "--lookahead",
-        type=int,
-        default=3,
-        help="Protocol detection lookahead window (default: 3)"
-    )
-    parser.add_argument(
-        "--pfact",
-        type=float,
-        default=2.0,
-        help="Protocol detection sensitivity factor (default: 2.0)"
-    )
+    parser.add_argument("--min-size", type=int, default=1, help="Minimum message size in bytes (default: 1)")
+    parser.add_argument("--max-size", type=int, default=65536, help="Maximum message size in bytes (default: 65536)")
+    parser.add_argument("--num-runs", type=int, default=10, help="Number of measurement runs per size (default: 10)")
+    parser.add_argument("--lookahead", type=int, default=3, help="Protocol detection lookahead window (default: 3)")
+    parser.add_argument("--pfact", type=float, default=2.0, help="Protocol detection sensitivity factor (default: 2.0)")
 
     args = parser.parse_args()
 
@@ -1178,6 +1094,7 @@ Examples:
         if backend.rank == 0:
             print(f"Error during profiling: {e}", file=sys.stderr)
             import traceback
+
             traceback.print_exc()
         sys.exit(1)
     finally:

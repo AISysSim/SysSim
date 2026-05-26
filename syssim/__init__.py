@@ -1,13 +1,24 @@
 __version__ = "0.1.0"
 
+from .api import (
+    set_efficiency_model_dir,
+    trace_model_for_inference,
+    trace_model_for_plena,
+    trace_model_for_training,
+)
 from .config import (
-    ExecutionMode, HardwareInfo, SimulatorConfig, NetworkParams,
+    ExecutionMode,
+    HardwareInfo,
+    NetworkParams,
+    SimulatorConfig,
     get_hardware_info,
 )
-from .operator_graph import OperatorType, OperatorNode, OperatorGraph, TensorMeta
-from .api import (
-    trace_model_for_training, trace_model_for_inference, set_efficiency_model_dir,
-)
+
+# PLENA integration (Op-Level via syssim.config_plena)
+from .config_plena import PLENAConfig, is_plena_hardware
+
+# Diffusers integration (syssim.integrations.diffusers)
+from .integrations.diffusers import trace_diffusers_model_for_inference
 
 # Hugging Face integration (syssim.integrations.huggingface)
 from .integrations.huggingface import (
@@ -15,19 +26,32 @@ from .integrations.huggingface import (
     trace_hf_training_step,
 )
 
-# Diffusers integration (syssim.integrations.diffusers)
-from .integrations.diffusers import trace_diffusers_model_for_inference
-
 # Network simulator (syssim.network)
 from .network import (
-    # Core types
-    LogGPParams, Topology, Resource, Op, Step, SimulationResult,
     # Topologies
-    FullyConnectedTopology, RingTopology, SwitchTopology,
-    NVLinkMeshTopology, HierarchicalTopology,
+    FullyConnectedTopology,
+    HierarchicalTopology,
+    # Core types
+    LogGPParams,
+    NVLinkMeshTopology,
+    Op,
+    Resource,
+    RingTopology,
+    SimulationResult,
+    Step,
+    SwitchTopology,
+    Topology,
+    allgather,
     # Collectives
-    allreduce, broadcast, reduce, reduce_scatter, allgather,
-    alltoall, scatter, gather,
+    allreduce,
+    alltoall,
+    broadcast,
+    build_dag,
+    gather,
+    reduce,
+    reduce_scatter,
+    scatter,
     # Simulation
-    simulate, build_dag,
+    simulate,
 )
+from .operator_graph import OperatorGraph, OperatorNode, OperatorType, TensorMeta

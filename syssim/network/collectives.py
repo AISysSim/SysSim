@@ -28,8 +28,9 @@ References:
 - NCCL algorithms documentation
 """
 
-from .dag_builder import build_dag, Op, Step
 import math
+
+from .dag_builder import Op, Step, build_dag
 
 
 def allreduce(ranks: list[int], total_size: float, tag_prefix: str = "") -> list[Op]:

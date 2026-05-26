@@ -8,6 +8,7 @@ pandas
 # ── Profiler (efficiency model training) ─────────────────────────────────────
 scikit-learn
 xgboost
+flashinfer-python>=0.6  # FP8/FP4 GEMM and attention kernels (Blackwell)
 
 # ── Examples ─────────────────────────────────────────────────────────────────
 transformers

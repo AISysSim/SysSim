@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch.nn as nn
 
 from .config import ExecutionMode, SimulatorConfig
-from .tracer import OperatorGraphTracer
 from .operator_graph import OperatorGraph
+from .tracer import OperatorGraphTracer
+
+if TYPE_CHECKING:
+    from .config_plena import PLENAConfig
 
 
 def trace_model_for_training(
@@ -83,4 +86,55 @@ def set_efficiency_model_dir(model_dir: str) -> None:
         >>> graph = trace_model_for_inference(model, inputs, config)
     """
     from .compute.efficiency_models import set_backend_dir
+
     set_backend_dir(model_dir)
+
+
+def trace_model_for_plena(
+    model: nn.Module,
+    example_inputs: Any,
+    plena_config: "PLENAConfig",
+    mode: str = "prefill",
+) -> OperatorGraph:
+    """Trace a PyTorch model with PLENA cycle-based estimation.
+
+    Uses PLENA's analytic performance model instead of GPU roofline
+    to estimate operator execution times on the PLENA accelerator.
+
+    Args:
+        model: The PyTorch model to trace.
+        example_inputs: Example inputs for shape inference (tensor, tuple, list, or dict).
+        plena_config: PLENAConfig with paths to PLENA configuration files.
+        mode: Inference mode, either "prefill" or "decode".
+
+    Returns:
+        An OperatorGraph containing the traced operations with PLENA cycle estimates.
+
+    Example:
+        >>> from syssim import trace_model_for_plena
+        >>> from syssim.config_plena import PLENAConfig
+        >>>
+        >>> config = PLENAConfig.from_plena_submodule()
+        >>> graph = trace_model_for_plena(model, inputs, config, mode="prefill")
+        >>> print(f"Critical path: {graph.compute_critical_path():.2f} ms")
+    """
+    from .compute.plena_backend import PLENAEstimator
+
+    mode_map = {
+        "prefill": ExecutionMode.PREFILL,
+        "decode": ExecutionMode.DECODE,
+    }
+    if mode not in mode_map:
+        raise ValueError(f"Invalid inference mode '{mode}', expected 'prefill' or 'decode'")
+    execution_mode = mode_map[mode]
+
+    # Create PLENA estimator
+    plena_estimator = PLENAEstimator(plena_config)
+
+    tracer = OperatorGraphTracer(
+        hw_info=None,  # Not using GPU roofline
+        execution_mode=execution_mode,
+        cache_seq_len=0,
+        plena_estimator=plena_estimator,
+    )
+    return tracer.trace(model, example_inputs, forward_backward=False, loss_fn=None)

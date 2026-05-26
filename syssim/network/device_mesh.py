@@ -19,7 +19,8 @@ Example:
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple, Dict
+from typing import Dict, List, Tuple
+
 import numpy as np
 
 
@@ -47,22 +48,20 @@ class DeviceMesh:
         >>> mesh.total_ranks
         8
     """
+
     shape: Tuple[int, ...]
     dimension_names: List[str]
     topology_types: List[str] = None
-    ranks_order: str = 'C'  # 'C' (row-major) or 'F' (column-major)
+    ranks_order: str = "C"  # 'C' (row-major) or 'F' (column-major)
 
     def __post_init__(self):
         """Validate mesh parameters and compute derived attributes."""
         # Convert shape to tuple if it's a list
         if isinstance(self.shape, list):
-            object.__setattr__(self, 'shape', tuple(self.shape))
+            object.__setattr__(self, "shape", tuple(self.shape))
 
         if len(self.shape) != len(self.dimension_names):
-            raise ValueError(
-                f"shape {self.shape} and dimension_names {self.dimension_names} "
-                f"must have same length"
-            )
+            raise ValueError(f"shape {self.shape} and dimension_names {self.dimension_names} must have same length")
 
         # Validate topology_types if provided
         if self.topology_types is not None:
@@ -72,25 +71,17 @@ class DeviceMesh:
                     f"dimension_names {self.dimension_names}"
                 )
 
-        if self.ranks_order not in ['C', 'F']:
-            raise ValueError(
-                f"ranks_order must be 'C' (row-major) or 'F' (column-major), "
-                f"got '{self.ranks_order}'"
-            )
+        if self.ranks_order not in ["C", "F"]:
+            raise ValueError(f"ranks_order must be 'C' (row-major) or 'F' (column-major), got '{self.ranks_order}'")
 
         # Validate shape values
         for i, dim_size in enumerate(self.shape):
             if dim_size <= 0:
-                raise ValueError(
-                    f"shape[{i}] ('{self.dimension_names[i]}') must be positive, "
-                    f"got {dim_size}"
-                )
+                raise ValueError(f"shape[{i}] ('{self.dimension_names[i]}') must be positive, got {dim_size}")
 
         # Validate dimension names are unique
         if len(self.dimension_names) != len(set(self.dimension_names)):
-            raise ValueError(
-                f"dimension_names must be unique, got {self.dimension_names}"
-            )
+            raise ValueError(f"dimension_names must be unique, got {self.dimension_names}")
 
         self.total_ranks = int(np.prod(self.shape))
 
@@ -112,17 +103,12 @@ class DeviceMesh:
             6
         """
         if len(coords) != len(self.shape):
-            raise ValueError(
-                f"coords {coords} length must match shape {self.shape}"
-            )
+            raise ValueError(f"coords {coords} length must match shape {self.shape}")
 
         # Validate bounds
         for i, (coord, dim_size) in enumerate(zip(coords, self.shape)):
             if not (0 <= coord < dim_size):
-                raise ValueError(
-                    f"coords[{i}] ('{self.dimension_names[i]}') = {coord} "
-                    f"out of bounds [0, {dim_size})"
-                )
+                raise ValueError(f"coords[{i}] ('{self.dimension_names[i]}') = {coord} out of bounds [0, {dim_size})")
 
         return int(np.ravel_multi_index(coords, self.shape, order=self.ranks_order))
 
@@ -144,17 +130,11 @@ class DeviceMesh:
             [1, 2]
         """
         if not (0 <= rank < self.total_ranks):
-            raise ValueError(
-                f"rank {rank} out of bounds [0, {self.total_ranks})"
-            )
+            raise ValueError(f"rank {rank} out of bounds [0, {self.total_ranks})")
 
         return list(np.unravel_index(rank, self.shape, order=self.ranks_order))
 
-    def ranks_in_slice(
-        self,
-        fix_dims: Dict[str, int],
-        vary_dims: List[str]
-    ) -> List[int]:
+    def ranks_in_slice(self, fix_dims: Dict[str, int], vary_dims: List[str]) -> List[int]:
         """Get all ranks where fix_dims are constant, vary_dims change.
 
         Args:
@@ -182,32 +162,22 @@ class DeviceMesh:
         # Validate fix_dims keys and values
         for dim_name, dim_value in fix_dims.items():
             if dim_name not in self.dimension_names:
-                raise ValueError(
-                    f"fix_dims contains '{dim_name}' not in mesh.dimension_names "
-                    f"{self.dimension_names}"
-                )
+                raise ValueError(f"fix_dims contains '{dim_name}' not in mesh.dimension_names {self.dimension_names}")
 
             if not isinstance(dim_value, int):
                 raise ValueError(
-                    f"fix_dims['{dim_name}'] must be int, got {type(dim_value).__name__}. "
-                    f"Wildcards not supported."
+                    f"fix_dims['{dim_name}'] must be int, got {type(dim_value).__name__}. Wildcards not supported."
                 )
 
             # Validate bounds
             dim_idx = self.dimension_names.index(dim_name)
             if not (0 <= dim_value < self.shape[dim_idx]):
-                raise ValueError(
-                    f"fix_dims['{dim_name}'] = {dim_value} out of bounds "
-                    f"[0, {self.shape[dim_idx]})"
-                )
+                raise ValueError(f"fix_dims['{dim_name}'] = {dim_value} out of bounds [0, {self.shape[dim_idx]})")
 
         # Validate vary_dims
         for dim_name in vary_dims:
             if dim_name not in self.dimension_names:
-                raise ValueError(
-                    f"vary_dims contains '{dim_name}' not in mesh.dimension_names "
-                    f"{self.dimension_names}"
-                )
+                raise ValueError(f"vary_dims contains '{dim_name}' not in mesh.dimension_names {self.dimension_names}")
 
         # Iterate over all mesh coords, filter by constraints
         ranks = []
@@ -228,10 +198,7 @@ class DeviceMesh:
         return sorted(ranks)
 
     def get_representative_pairs(
-        self,
-        fix_dims: Dict[str, int],
-        vary_dims: List[str],
-        num_pairs: int = 1
+        self, fix_dims: Dict[str, int], vary_dims: List[str], num_pairs: int = 1
     ) -> List[Tuple[int, int]]:
         """Get representative rank pairs from a mesh slice.
 
@@ -262,8 +229,7 @@ class DeviceMesh:
 
         if len(ranks) < 2:
             raise ValueError(
-                f"Slice has <2 ranks, cannot form pairs: fix_dims={fix_dims}, "
-                f"vary_dims={vary_dims}, ranks={ranks}"
+                f"Slice has <2 ranks, cannot form pairs: fix_dims={fix_dims}, vary_dims={vary_dims}, ranks={ranks}"
             )
 
         # Return diagonal pairs: (0,1), (0,2), ..., (0, num_pairs)
@@ -273,11 +239,7 @@ class DeviceMesh:
 
         return pairs
 
-    def validate_dimension_scope(
-        self,
-        fix_dims: Dict[str, int],
-        vary_dims: List[str]
-    ) -> None:
+    def validate_dimension_scope(self, fix_dims: Dict[str, int], vary_dims: List[str]) -> None:
         """Validate that fix_dims and vary_dims are consistent with mesh.
 
         Args:
@@ -290,21 +252,18 @@ class DeviceMesh:
         # Check for overlap
         overlap = set(fix_dims.keys()) & set(vary_dims)
         if overlap:
-            raise ValueError(
-                f"fix_dims and vary_dims cannot overlap, found: {overlap}"
-            )
+            raise ValueError(f"fix_dims and vary_dims cannot overlap, found: {overlap}")
 
         # Check coverage (all dimensions should be either fixed or varying)
         all_dims = set(fix_dims.keys()) | set(vary_dims)
         mesh_dims = set(self.dimension_names)
 
-        missing = mesh_dims - all_dims
+        mesh_dims - all_dims
         extra = all_dims - mesh_dims
 
         if extra:
             raise ValueError(
-                f"Scope contains dimensions not in mesh: {extra}. "
-                f"Valid dimensions: {self.dimension_names}"
+                f"Scope contains dimensions not in mesh: {extra}. Valid dimensions: {self.dimension_names}"
             )
 
         # Note: missing dimensions are allowed (they become implicit varying dimensions)

@@ -1,22 +1,20 @@
 """Tests for efficiency model infrastructure."""
 
+import os
+import tempfile
+
 import pytest
 import torch
-import tempfile
-import os
 
 from syssim.compute.compute_cost_predictor import (
-    roofline_estimate,
+    RooflineResult,
     efficiency_estimate,
     estimate_runtime,
-    RooflineResult,
-    ConstraintTime,
+    roofline_estimate,
 )
 from syssim.compute.efficiency_models import (
-    EfficiencyFeatures,
-    MLPEfficiencyModel,
     BackendManager,
-    set_backend_dir,
+    EfficiencyFeatures,
 )
 from syssim.config import HardwareInfo
 from syssim.operator_graph import OperatorType
@@ -128,11 +126,16 @@ def test_efficiency_features_to_array():
     )
 
     feature_order = [
-        "T_math_device", "T_memory_device",
-        "r_math_device", "r_memory_device",
+        "T_math_device",
+        "T_memory_device",
+        "r_math_device",
+        "r_memory_device",
         "dom_math_device",
-        "log_M", "log_N", "log_K",
-        "flop_ratio", "log_peak_flop_mm",
+        "log_M",
+        "log_N",
+        "log_K",
+        "flop_ratio",
+        "log_peak_flop_mm",
     ]
 
     arr = features.to_array(feature_order)
@@ -198,3 +201,47 @@ def test_estimate_runtime_with_zero_efficiency(hw_info):
 
     # Should not crash and return a valid number
     assert time_ms >= 0
+
+
+def test_backend_manager_routes_by_dtype(tmp_path, monkeypatch):
+    """BackendManager.get_model(op_type, dtype) should pick the right per-dtype file."""
+    # Stub get_hardware_info so we do not need real CUDA
+    monkeypatch.setattr(
+        "syssim.compute.efficiency_models.get_hardware_info"
+        if hasattr(__import__("syssim.compute.efficiency_models", fromlist=["x"]), "get_hardware_info")
+        else "syssim.config.get_hardware_info",
+        lambda: (None, "pro6000"),
+        raising=False,
+    )
+
+    mgr = BackendManager.__new__(BackendManager)
+    mgr.model_dir = str(tmp_path)
+    mgr.hw_name = "pro6000"
+    mgr._models = {}
+
+    found_fp16 = mgr._resolve_model_path(OperatorType.GEMM, "fp16")
+    found_fp8 = mgr._resolve_model_path(OperatorType.GEMM, "fp8")
+    found_fp4 = mgr._resolve_model_path(OperatorType.GEMM, "fp4")
+    assert found_fp16.endswith("gemm_pro6000_fp16_xgb.pth")
+    assert found_fp8.endswith("gemm_pro6000_fp8_xgb.pth")
+    assert found_fp4.endswith("gemm_pro6000_fp4_xgb.pth")
+
+
+def test_backend_manager_get_model_falls_back_to_fp16(tmp_path):
+    """When asked for fp8/fp4 with no model, fall back to fp16 model if present."""
+    mgr = BackendManager.__new__(BackendManager)
+    mgr.model_dir = str(tmp_path)
+    mgr.hw_name = "pro6000"
+
+    class _Stub:
+        def predict(self, _f):
+            return 0.5
+
+    fp16_model = _Stub()
+    mgr._models = {(OperatorType.GEMM, "fp16"): fp16_model}
+
+    assert mgr.get_model(OperatorType.GEMM, "fp16") is fp16_model
+    assert mgr.get_model(OperatorType.GEMM, "fp8") is fp16_model  # fallback
+    assert mgr.get_model(OperatorType.GEMM, "fp4") is fp16_model  # fallback
+    # Unknown op returns None
+    assert mgr.get_model(OperatorType.ATTN, "fp16") is None

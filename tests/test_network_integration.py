@@ -4,13 +4,16 @@ These tests verify that multiple collectives can be composed and simulated
 together, and demonstrate real-world use cases like multi-node RLHF training.
 """
 
-import pytest
 from syssim import (
-    # Network simulator
-    allreduce, broadcast, LogGPParams, HierarchicalTopology, simulate,
-    NVLinkMeshTopology,
+    HierarchicalTopology,
+    LogGPParams,
     # Config
     NetworkParams,
+    NVLinkMeshTopology,
+    # Network simulator
+    allreduce,
+    broadcast,
+    simulate,
 )
 
 
@@ -19,14 +22,14 @@ class TestMultiCollectiveComposition:
 
     def test_sequential_collectives(self):
         """Sequential collectives work correctly with dependencies."""
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
         topo = NVLinkMeshTopology(8, 25e9, 12)
 
         # First: allreduce
-        ar_ops = allreduce([0,1,2,3,4,5,6,7], 1e9, "ar")
+        ar_ops = allreduce([0, 1, 2, 3, 4, 5, 6, 7], 1e9, "ar")
 
         # Second: broadcast (depends on allreduce)
-        bc_ops = broadcast([0,1,2,3,4,5,6,7], 500e6, root=0, tag_prefix="bc")
+        bc_ops = broadcast([0, 1, 2, 3, 4, 5, 6, 7], 500e6, root=0, tag_prefix="bc")
 
         # Add dependency: All broadcast ops depend on ALL allreduce ops
         # (Conservative: ensures broadcast starts after allreduce finishes)
@@ -36,7 +39,7 @@ class TestMultiCollectiveComposition:
 
         # Simulate together
         all_ops = ar_ops + bc_ops
-        result = simulate(all_ops, topo, loggp)
+        simulate(all_ops, topo, loggp)
 
         # Broadcast should start after allreduce finishes
         ar_finish = max(op.finish_time for op in ar_ops)
@@ -46,14 +49,14 @@ class TestMultiCollectiveComposition:
 
     def test_concurrent_collectives_with_overlap(self):
         """Concurrent collectives on overlapping ranks show contention."""
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
         topo = NVLinkMeshTopology(8, 25e9, 12)
 
         # Actor allreduce (ranks 0-5)
-        actor_ar = allreduce([0,1,2,3,4,5], 2e9, "actor")
+        actor_ar = allreduce([0, 1, 2, 3, 4, 5], 2e9, "actor")
 
         # Critic allreduce (ranks 2-7) - overlaps with actor on ranks 2-5
-        critic_ar = allreduce([2,3,4,5,6,7], 1e9, "critic")
+        critic_ar = allreduce([2, 3, 4, 5, 6, 7], 1e9, "critic")
 
         # Simulate concurrently (no dependencies)
         all_ops = actor_ar + critic_ar
@@ -67,10 +70,10 @@ class TestMultiCollectiveComposition:
         rank_finish = result.per_rank_finish
 
         # Ranks 2-5 participate in both, should finish last
-        overlap_finish = max(rank_finish[i] for i in [2,3,4,5])
+        overlap_finish = max(rank_finish[i] for i in [2, 3, 4, 5])
 
         # Ranks 0,1 only in actor, ranks 6,7 only in critic
-        nonoverlap_finish = max(rank_finish[i] for i in [0,1,6,7])
+        nonoverlap_finish = max(rank_finish[i] for i in [0, 1, 6, 7])
 
         # Overlapping ranks should take longer (due to double work)
         # This is a qualitative check
@@ -78,27 +81,27 @@ class TestMultiCollectiveComposition:
 
     def test_three_collectives_pipeline(self):
         """Three collectives in a pipeline."""
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
         topo = NVLinkMeshTopology(8, 25e9, 12)
 
         # Stage 1: AllReduce
-        ar_ops = allreduce([0,1,2,3,4,5,6,7], 1e9, "ar")
+        ar_ops = allreduce([0, 1, 2, 3, 4, 5, 6, 7], 1e9, "ar")
 
         # Stage 2: Broadcast (depends on AllReduce)
-        bc_ops = broadcast([0,1,2,3,4,5,6,7], 500e6, root=0, tag_prefix="bc")
+        bc_ops = broadcast([0, 1, 2, 3, 4, 5, 6, 7], 500e6, root=0, tag_prefix="bc")
         for op in bc_ops:
             if not op.deps:
                 op.deps.extend(ar_ops[-8:])  # Last step of allreduce
 
         # Stage 3: Second AllReduce (depends on Broadcast)
-        ar2_ops = allreduce([0,1,2,3,4,5,6,7], 1e9, "ar2")
+        ar2_ops = allreduce([0, 1, 2, 3, 4, 5, 6, 7], 1e9, "ar2")
         for op in ar2_ops:
             if not op.deps:
                 op.deps.extend(bc_ops[-1:])  # Last op of broadcast
 
         # Simulate pipeline
         all_ops = ar_ops + bc_ops + ar2_ops
-        result = simulate(all_ops, topo, loggp)
+        simulate(all_ops, topo, loggp)
 
         # Verify ordering
         ar_finish = max(op.finish_time for op in ar_ops)
@@ -116,8 +119,8 @@ class TestMultiNodeRLHF:
     def test_single_node_rlhf(self):
         """RLHF on single DGX node (8 GPUs)."""
         # Single-node: NVLink mesh
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))  # Unused on single node
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))  # Unused on single node
 
         topo = HierarchicalTopology(
             num_nodes=1,
@@ -130,10 +133,10 @@ class TestMultiNodeRLHF:
         )
 
         # Actor model: ranks 0-3
-        actor_ar = allreduce([0,1,2,3], 2e9, "actor")
+        actor_ar = allreduce([0, 1, 2, 3], 2e9, "actor")
 
         # Critic model: ranks 4-7
-        critic_ar = allreduce([4,5,6,7], 1e9, "critic")
+        critic_ar = allreduce([4, 5, 6, 7], 1e9, "critic")
 
         # Simulate (actor and critic run concurrently)
         all_ops = actor_ar + critic_ar
@@ -150,8 +153,8 @@ class TestMultiNodeRLHF:
 
     def test_multi_node_rlhf_separate_models(self):
         """RLHF with actor and critic on separate nodes."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(
             num_nodes=4,
@@ -180,16 +183,14 @@ class TestMultiNodeRLHF:
 
         # Actor uses inter-node communication
         actor_inter_node = any(
-            topo._rank_to_node(op.src) != topo._rank_to_node(op.dst)
-            for op in actor_ar
-            if op.src != op.dst
+            topo._rank_to_node(op.src) != topo._rank_to_node(op.dst) for op in actor_ar if op.src != op.dst
         )
         assert actor_inter_node  # Should have some inter-node ops
 
     def test_multi_node_rlhf_overlapping_nodes(self):
         """RLHF with actor and critic overlapping on node 1 (contention)."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(
             num_nodes=4,
@@ -238,6 +239,7 @@ class TestMultiNodeRLHF:
 
         # Can be attached to HardwareInfo (for future integration)
         from syssim import HardwareInfo
+
         hw = HardwareInfo(
             peak_tflops_mm=989.0,
             peak_tflops_math=989.0,

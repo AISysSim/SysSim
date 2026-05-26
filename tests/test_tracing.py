@@ -2,20 +2,20 @@
 
 import json
 
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytest
 
 from syssim import (
-    trace_model_for_training,
-    trace_model_for_inference,
     ExecutionMode,
     HardwareInfo,
-    SimulatorConfig,
-    OperatorType,
-    OperatorNode,
     OperatorGraph,
+    OperatorNode,
+    OperatorType,
+    SimulatorConfig,
+    trace_model_for_inference,
+    trace_model_for_training,
 )
 
 requires_cuda = pytest.mark.skipif(
@@ -25,6 +25,7 @@ requires_cuda = pytest.mark.skipif(
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def hw():
@@ -42,6 +43,7 @@ def config(hw):
 
 # ── CUDA requirement ──────────────────────────────────────────────────────
 
+
 def test_tracing_raises_without_cuda(config):
     """Tracing should raise RuntimeError when inputs are non-CUDA."""
     model = nn.Linear(8, 4)
@@ -51,6 +53,7 @@ def test_tracing_raises_without_cuda(config):
 
 
 # ── Basic tracing ─────────────────────────────────────────────────────────
+
 
 @requires_cuda
 class TestTraceLinear:
@@ -97,12 +100,11 @@ class TestTraceSequential:
         topo = graph.topological_sort()
         for name in topo[1:]:
             op = graph.operators[name]
-            assert len(op.data_deps) + len(op.stream_deps) > 0, (
-                f"{name} has no dependencies"
-            )
+            assert len(op.data_deps) + len(op.stream_deps) > 0, f"{name} has no dependencies"
 
 
 # ── Time estimation ──────────────────────────────────────────────────────
+
 
 @requires_cuda
 class TestTimeEstimation:
@@ -111,16 +113,14 @@ class TestTimeEstimation:
     def test_gemm_has_nonzero_time(self, config):
         model = nn.Linear(128, 64)
         graph = trace_model_for_inference(model, torch.randn(32, 128).cuda(), config)
-        gemm_ops = [
-            op for op in graph.operators.values()
-            if op.op_type == OperatorType.GEMM
-        ]
+        gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         assert len(gemm_ops) > 0
         for op in gemm_ops:
             assert op.estimated_time_ms > 0.0
 
 
 # ── GEMM config extraction ──────────────────────────────────────────────
+
 
 @requires_cuda
 class TestGEMMConfig:
@@ -129,10 +129,7 @@ class TestGEMMConfig:
     def test_gemm_has_mnk(self, config):
         model = nn.Linear(64, 32)
         graph = trace_model_for_inference(model, torch.randn(16, 64).cuda(), config)
-        gemm_ops = [
-            op for op in graph.operators.values()
-            if op.op_type == OperatorType.GEMM
-        ]
+        gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         assert len(gemm_ops) > 0
         cfg = gemm_ops[0].config
         assert "M" in cfg
@@ -142,10 +139,7 @@ class TestGEMMConfig:
     def test_gemm_shapes_match(self, config):
         model = nn.Linear(64, 32)
         graph = trace_model_for_inference(model, torch.randn(16, 64).cuda(), config)
-        gemm_ops = [
-            op for op in graph.operators.values()
-            if op.op_type == OperatorType.GEMM
-        ]
+        gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         cfg = gemm_ops[0].config
         assert cfg["M"] == 16
         assert cfg["K"] == 64
@@ -154,6 +148,7 @@ class TestGEMMConfig:
 
 # ── Tensor metadata ─────────────────────────────────────────────────────
 
+
 @requires_cuda
 class TestTensorMetadata:
     """Operators should capture input/output tensor metadata."""
@@ -161,10 +156,7 @@ class TestTensorMetadata:
     def test_outputs_recorded(self, config):
         model = nn.Linear(16, 8)
         graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
-        gemm_ops = [
-            op for op in graph.operators.values()
-            if op.op_type == OperatorType.GEMM
-        ]
+        gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         assert len(gemm_ops) > 0
         assert len(gemm_ops[0].outputs) > 0
         out_meta = gemm_ops[0].outputs[0]
@@ -173,14 +165,12 @@ class TestTensorMetadata:
     def test_inputs_recorded(self, config):
         model = nn.Linear(16, 8)
         graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
-        gemm_ops = [
-            op for op in graph.operators.values()
-            if op.op_type == OperatorType.GEMM
-        ]
+        gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         assert len(gemm_ops[0].inputs) > 0
 
 
 # ── Critical path ────────────────────────────────────────────────────────
+
 
 @requires_cuda
 class TestCriticalPath:
@@ -213,6 +203,7 @@ class TestCriticalPath:
 
 # ── Export formats ────────────────────────────────────────────────────────
 
+
 @requires_cuda
 class TestExports:
     """Graph export to DOT, JSON, and summary."""
@@ -243,6 +234,7 @@ class TestExports:
 
 # ── trace_model_for_training ─────────────────────────────────────────────
 
+
 @requires_cuda
 class TestTraceForTraining:
     """trace_model_for_training always traces forward + backward."""
@@ -271,6 +263,7 @@ class TestTraceForTraining:
 
 
 # ── trace_model_for_inference (prefill) ──────────────────────────────────
+
 
 @requires_cuda
 class TestTraceForInference:
@@ -303,6 +296,7 @@ class TestTraceForInference:
 
 # ── Decode mode ──────────────────────────────────────────────────────────
 
+
 @requires_cuda
 class TestDecodeMode:
     """Decode mode with KV cache-aware attention estimation."""
@@ -314,6 +308,7 @@ class TestDecodeMode:
             _decode_attention_compute_ns,
             _decode_attention_transfer_ns,
         )
+
         # Simulate Q shape: (batch=4, heads=8, seq=1, dim=64)
         q = torch.randn(4, 8, 1, 64).cuda()
         args = (q,)
@@ -331,6 +326,7 @@ class TestDecodeMode:
             _decode_attention_compute_ns,
             _decode_attention_transfer_ns,
         )
+
         q = torch.randn(4, 8, 1, 64).cuda()
         args = (q,)
         cache_seq_len = 4096
@@ -349,11 +345,22 @@ class TestDecodeMode:
         # With cache_seq_len=0, the decode override should NOT activate
         # and standard path should be used (which returns same as no mode)
         time_no_mode = estimate_runtime(
-            None, (q,), {}, q, hw, OperatorType.ATTN,
+            None,
+            (q,),
+            {},
+            q,
+            hw,
+            OperatorType.ATTN,
         )
         time_decode_zero = estimate_runtime(
-            None, (q,), {}, q, hw, OperatorType.ATTN,
-            execution_mode=ExecutionMode.DECODE, cache_seq_len=0,
+            None,
+            (q,),
+            {},
+            q,
+            hw,
+            OperatorType.ATTN,
+            execution_mode=ExecutionMode.DECODE,
+            cache_seq_len=0,
         )
         assert time_no_mode == time_decode_zero
 
@@ -362,6 +369,7 @@ class TestDecodeMode:
         from syssim.compute.compute_cost_predictor import (
             _decode_attention_transfer_ns,
         )
+
         q = torch.randn(4, 8, 1, 64).cuda()
         args = (q,)
 
@@ -393,12 +401,14 @@ class TestDecodeMode:
             _decode_attention_compute_ns,
             _decode_attention_transfer_ns,
         )
+
         q_2d = torch.randn(4, 64).cuda()
         assert _decode_attention_compute_ns((q_2d,), hw, 1024) == 0.0
         assert _decode_attention_transfer_ns((q_2d,), hw, 1024) == 0.0
 
 
 # ── Operator type coverage ───────────────────────────────────────────────
+
 
 @requires_cuda
 class TestOperatorTypeGEMM:
@@ -433,6 +443,7 @@ class TestOperatorTypeATTENTION:
 
     def test_sdpa_produces_attention(self, config):
         """SDPA should be classified as ATTENTION."""
+
         class SDPAModel(nn.Module):
             def forward(self, q, k, v):
                 return F.scaled_dot_product_attention(q, k, v)
@@ -526,8 +537,10 @@ class TestOperatorTypeCOLLECTIVE:
         graph = OperatorGraph("collective_test")
         compute = OperatorNode(name="gemm_0", op_type=OperatorType.GEMM, estimated_time_ms=1.0)
         coll = OperatorNode(
-            name="allreduce_0", op_type=OperatorType.COLLECTIVE,
-            estimated_time_ms=2.0, data_deps=["gemm_0"],
+            name="allreduce_0",
+            op_type=OperatorType.COLLECTIVE,
+            estimated_time_ms=2.0,
+            data_deps=["gemm_0"],
         )
         graph.add_operator(compute)
         graph.add_operator(coll)
@@ -536,9 +549,13 @@ class TestOperatorTypeCOLLECTIVE:
 
     def test_collective_in_summary(self):
         graph = OperatorGraph("collective_test")
-        graph.add_operator(OperatorNode(
-            name="allreduce_0", op_type=OperatorType.COLLECTIVE, estimated_time_ms=0.5,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="allreduce_0",
+                op_type=OperatorType.COLLECTIVE,
+                estimated_time_ms=0.5,
+            )
+        )
         s = graph.summary()
         assert "collective: 1" in s
 
@@ -561,21 +578,33 @@ class TestOperatorTypeMEMORY:
 
     def test_memory_in_critical_path(self):
         graph = OperatorGraph("memory_test")
-        graph.add_operator(OperatorNode(
-            name="compute_0", op_type=OperatorType.MATH, estimated_time_ms=1.0,
-        ))
-        graph.add_operator(OperatorNode(
-            name="copy_0", op_type=OperatorType.MEMORY,
-            estimated_time_ms=0.5, data_deps=["compute_0"],
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="compute_0",
+                op_type=OperatorType.MATH,
+                estimated_time_ms=1.0,
+            )
+        )
+        graph.add_operator(
+            OperatorNode(
+                name="copy_0",
+                op_type=OperatorType.MEMORY,
+                estimated_time_ms=0.5,
+                data_deps=["compute_0"],
+            )
+        )
         cp = graph.compute_critical_path()
         assert cp == pytest.approx(1.5)
 
     def test_memory_in_summary(self):
         graph = OperatorGraph("memory_test")
-        graph.add_operator(OperatorNode(
-            name="copy_0", op_type=OperatorType.MEMORY, estimated_time_ms=0.1,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="copy_0",
+                op_type=OperatorType.MEMORY,
+                estimated_time_ms=0.1,
+            )
+        )
         s = graph.summary()
         assert "memory: 1" in s
 
@@ -586,38 +615,59 @@ class TestOperatorTypeBARRIER:
 
     def test_barrier_node_in_graph(self):
         graph = OperatorGraph("barrier_test")
-        graph.add_operator(OperatorNode(
-            name="barrier_0", op_type=OperatorType.BARRIER, estimated_time_ms=0.0,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="barrier_0",
+                op_type=OperatorType.BARRIER,
+                estimated_time_ms=0.0,
+            )
+        )
         assert graph.operators["barrier_0"].op_type == OperatorType.BARRIER
 
     def test_barrier_waits_for_all_streams(self):
         """BARRIER waits for the slowest of all streams."""
         graph = OperatorGraph("barrier_test")
         # Stream 0: fast op
-        graph.add_operator(OperatorNode(
-            name="fast_op", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=0,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="fast_op",
+                op_type=OperatorType.MATH,
+                estimated_time_ms=1.0,
+                stream_id=0,
+            )
+        )
         # Stream 1: slow op
-        graph.add_operator(OperatorNode(
-            name="slow_op", op_type=OperatorType.MATH,
-            estimated_time_ms=5.0, stream_id=1,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="slow_op",
+                op_type=OperatorType.MATH,
+                estimated_time_ms=5.0,
+                stream_id=1,
+            )
+        )
         # Barrier on stream 0 - should wait for stream 1 too
-        graph.add_operator(OperatorNode(
-            name="barrier_0", op_type=OperatorType.BARRIER,
-            estimated_time_ms=0.0, stream_id=0, stream_deps=["fast_op"],
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="barrier_0",
+                op_type=OperatorType.BARRIER,
+                estimated_time_ms=0.0,
+                stream_id=0,
+                stream_deps=["fast_op"],
+            )
+        )
         cp = graph.compute_critical_path()
         # Barrier must wait for slow_op (5.0 ms) even though it's on stream 0
         assert cp >= 5.0
 
     def test_barrier_in_summary(self):
         graph = OperatorGraph("barrier_test")
-        graph.add_operator(OperatorNode(
-            name="barrier_0", op_type=OperatorType.BARRIER, estimated_time_ms=0.0,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="barrier_0",
+                op_type=OperatorType.BARRIER,
+                estimated_time_ms=0.0,
+            )
+        )
         s = graph.summary()
         assert "barrier: 1" in s
 
@@ -628,47 +678,73 @@ class TestOperatorTypeSTREAM_SYNC:
 
     def test_stream_sync_node_in_graph(self):
         graph = OperatorGraph("sync_test")
-        graph.add_operator(OperatorNode(
-            name="sync_0", op_type=OperatorType.STREAM_SYNC,
-            estimated_time_ms=0.0, config={"target_stream": 1},
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="sync_0",
+                op_type=OperatorType.STREAM_SYNC,
+                estimated_time_ms=0.0,
+                config={"target_stream": 1},
+            )
+        )
         assert graph.operators["sync_0"].op_type == OperatorType.STREAM_SYNC
 
     def test_stream_sync_waits_for_target_stream(self):
         """STREAM_SYNC waits for its target stream only."""
         graph = OperatorGraph("sync_test")
         # Stream 0: has an op
-        graph.add_operator(OperatorNode(
-            name="op_s0", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=0,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="op_s0",
+                op_type=OperatorType.MATH,
+                estimated_time_ms=1.0,
+                stream_id=0,
+            )
+        )
         # Stream 1: slow op
-        graph.add_operator(OperatorNode(
-            name="op_s1", op_type=OperatorType.MATH,
-            estimated_time_ms=5.0, stream_id=1,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="op_s1",
+                op_type=OperatorType.MATH,
+                estimated_time_ms=5.0,
+                stream_id=1,
+            )
+        )
         # Stream 0: sync waits for stream 1
-        graph.add_operator(OperatorNode(
-            name="sync_0", op_type=OperatorType.STREAM_SYNC,
-            estimated_time_ms=0.0, stream_id=0,
-            stream_deps=["op_s0"], data_deps=["op_s1"],
-            config={"target_stream": 1},
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="sync_0",
+                op_type=OperatorType.STREAM_SYNC,
+                estimated_time_ms=0.0,
+                stream_id=0,
+                stream_deps=["op_s0"],
+                data_deps=["op_s1"],
+                config={"target_stream": 1},
+            )
+        )
         # Op after sync on stream 0
-        graph.add_operator(OperatorNode(
-            name="after_sync", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=0, stream_deps=["sync_0"],
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="after_sync",
+                op_type=OperatorType.MATH,
+                estimated_time_ms=1.0,
+                stream_id=0,
+                stream_deps=["sync_0"],
+            )
+        )
         cp = graph.compute_critical_path()
         # sync waits for op_s1 (5.0), then after_sync (1.0) → 6.0
         assert cp == pytest.approx(6.0)
 
     def test_stream_sync_in_summary(self):
         graph = OperatorGraph("sync_test")
-        graph.add_operator(OperatorNode(
-            name="sync_0", op_type=OperatorType.STREAM_SYNC,
-            estimated_time_ms=0.0, config={"target_stream": 1},
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="sync_0",
+                op_type=OperatorType.STREAM_SYNC,
+                estimated_time_ms=0.0,
+                config={"target_stream": 1},
+            )
+        )
         s = graph.summary()
         assert "stream_sync: 1" in s
 
@@ -681,41 +757,74 @@ class TestAllOperatorTypesInMixedGraph:
         graph = OperatorGraph("mixed")
 
         # GEMM on stream 0
-        graph.add_operator(OperatorNode(
-            name="gemm_0", op_type=OperatorType.GEMM,
-            estimated_time_ms=2.0, stream_id=0,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="gemm_0",
+                op_type=OperatorType.GEMM,
+                estimated_time_ms=2.0,
+                stream_id=0,
+            )
+        )
         # ATTENTION on stream 0
-        graph.add_operator(OperatorNode(
-            name="attn_0", op_type=OperatorType.ATTN,
-            estimated_time_ms=3.0, stream_id=0, stream_deps=["gemm_0"],
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="attn_0",
+                op_type=OperatorType.ATTN,
+                estimated_time_ms=3.0,
+                stream_id=0,
+                stream_deps=["gemm_0"],
+            )
+        )
         # COMPUTE on stream 1
-        graph.add_operator(OperatorNode(
-            name="compute_0", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=1,
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="compute_0",
+                op_type=OperatorType.MATH,
+                estimated_time_ms=1.0,
+                stream_id=1,
+            )
+        )
         # COLLECTIVE on stream 1
-        graph.add_operator(OperatorNode(
-            name="collective_0", op_type=OperatorType.COLLECTIVE,
-            estimated_time_ms=4.0, stream_id=1, stream_deps=["compute_0"],
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="collective_0",
+                op_type=OperatorType.COLLECTIVE,
+                estimated_time_ms=4.0,
+                stream_id=1,
+                stream_deps=["compute_0"],
+            )
+        )
         # MEMORY on stream 0
-        graph.add_operator(OperatorNode(
-            name="memory_0", op_type=OperatorType.MEMORY,
-            estimated_time_ms=0.5, stream_id=0, stream_deps=["attn_0"],
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="memory_0",
+                op_type=OperatorType.MEMORY,
+                estimated_time_ms=0.5,
+                stream_id=0,
+                stream_deps=["attn_0"],
+            )
+        )
         # BARRIER on stream 0 (waits for ALL streams)
-        graph.add_operator(OperatorNode(
-            name="barrier_0", op_type=OperatorType.BARRIER,
-            estimated_time_ms=0.0, stream_id=0, stream_deps=["memory_0"],
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="barrier_0",
+                op_type=OperatorType.BARRIER,
+                estimated_time_ms=0.0,
+                stream_id=0,
+                stream_deps=["memory_0"],
+            )
+        )
         # STREAM_SYNC on stream 0 (waits for stream 1)
-        graph.add_operator(OperatorNode(
-            name="sync_0", op_type=OperatorType.STREAM_SYNC,
-            estimated_time_ms=0.0, stream_id=0, stream_deps=["barrier_0"],
-            config={"target_stream": 1},
-        ))
+        graph.add_operator(
+            OperatorNode(
+                name="sync_0",
+                op_type=OperatorType.STREAM_SYNC,
+                estimated_time_ms=0.0,
+                stream_id=0,
+                stream_deps=["barrier_0"],
+                config={"target_stream": 1},
+            )
+        )
 
         cp = graph.compute_critical_path()
         assert cp > 0.0

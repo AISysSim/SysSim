@@ -30,21 +30,32 @@ class OperatorType(Enum):
     STREAM_SYNC = "stream_sync"
 
 
-_MATH_TYPES = frozenset({
-    OperatorType.GEMM, OperatorType.ATTN, OperatorType.MATH,
-})
+_MATH_TYPES = frozenset(
+    {
+        OperatorType.GEMM,
+        OperatorType.ATTN,
+        OperatorType.MATH,
+    }
+)
 
-_COLLECTIVE_TYPES = frozenset({
-    OperatorType.COLLECTIVE,
-})
+_COLLECTIVE_TYPES = frozenset(
+    {
+        OperatorType.COLLECTIVE,
+    }
+)
 
-_MEMORY_TYPES = frozenset({
-    OperatorType.MEMORY,
-})
+_MEMORY_TYPES = frozenset(
+    {
+        OperatorType.MEMORY,
+    }
+)
 
-_SYNC_TYPES = frozenset({
-    OperatorType.BARRIER, OperatorType.STREAM_SYNC,
-})
+_SYNC_TYPES = frozenset(
+    {
+        OperatorType.BARRIER,
+        OperatorType.STREAM_SYNC,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -126,9 +137,7 @@ class OperatorGraph:
         for name, op in self.operators.items():
             for dep in op.data_deps + op.stream_deps:
                 if dep not in self.operators:
-                    raise ValueError(
-                        f"Operator '{name}' depends on non-existent operator '{dep}'"
-                    )
+                    raise ValueError(f"Operator '{name}' depends on non-existent operator '{dep}'")
 
         # Cycle detection via DFS coloring
         WHITE, GRAY, BLACK = 0, 1, 2
@@ -243,9 +252,7 @@ class OperatorGraph:
         for name, op in self.operators.items():
             color = color_map.get(op.op_type, "white")
             label = f"{name}\\n{op.op_type.value}\\n{op.estimated_time_ms:.2e}ms"
-            lines.append(
-                f'  "{name}" [label="{label}", style=filled, fillcolor="{color}"];'
-            )
+            lines.append(f'  "{name}" [label="{label}", style=filled, fillcolor="{color}"];')
         for name, op in self.operators.items():
             for dep in op.data_deps:
                 lines.append(f'  "{dep}" -> "{name}" [style=solid];')

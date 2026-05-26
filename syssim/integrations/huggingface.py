@@ -1,10 +1,12 @@
 """Convenience wrappers for Hugging Face Transformers training."""
 
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional, Union
+
 import torch
 
 try:
     from transformers import PreTrainedModel
+
     HF_AVAILABLE = True
 except ImportError:
     HF_AVAILABLE = False
@@ -17,10 +19,10 @@ from ..operator_graph import OperatorGraph
 
 def trace_hf_model_for_training(
     model: PreTrainedModel,
-    inputs: dict[str, torch.Tensor] | Any,
+    inputs: Union[Dict[str, torch.Tensor], Any],
     config: SimulatorConfig,
-    loss_fn: Callable | None = None,
-    labels: torch.Tensor | None = None,
+    loss_fn: Optional[Callable] = None,
+    labels: Optional[torch.Tensor] = None,
 ) -> OperatorGraph:
     """Trace a Hugging Face model for training (forward + backward).
 
@@ -55,8 +57,7 @@ def trace_hf_model_for_training(
     """
     if not HF_AVAILABLE:
         raise ImportError(
-            "transformers package is required for Hugging Face integration. "
-            "Install with: pip install transformers"
+            "transformers package is required for Hugging Face integration. Install with: pip install transformers"
         )
 
     # Convert BatchEncoding to dict if needed
@@ -75,7 +76,9 @@ def trace_hf_model_for_training(
     if loss_fn is None:
         # Use model's built-in loss (requires labels in inputs)
         if "labels" in inputs:
-            loss_fn = lambda out: out.loss if hasattr(out, "loss") else out[0]
+
+            def loss_fn(out):
+                return out.loss if hasattr(out, "loss") else out[0]
         else:
             # Fallback: language modeling loss (shift logits/labels)
             loss_fn = _create_lm_loss_fn(inputs["input_ids"])
@@ -125,15 +128,13 @@ def trace_hf_training_step(
     """
     if not HF_AVAILABLE:
         raise ImportError(
-            "transformers package is required for Hugging Face integration. "
-            "Install with: pip install transformers"
+            "transformers package is required for Hugging Face integration. Install with: pip install transformers"
         )
 
     if use_mixed_precision:
         # Convert inputs to half precision
         batch = {
-            k: v.half() if isinstance(v, torch.Tensor) and v.dtype == torch.float32 else v
-            for k, v in batch.items()
+            k: v.half() if isinstance(v, torch.Tensor) and v.dtype == torch.float32 else v for k, v in batch.items()
         }
 
     return trace_hf_model_for_training(model, batch, config)
@@ -141,6 +142,7 @@ def trace_hf_training_step(
 
 def _create_lm_loss_fn(input_ids: torch.Tensor) -> Callable:
     """Create language modeling loss function (shift logits/labels)."""
+
     def lm_loss(outputs):
         logits = outputs.logits if hasattr(outputs, "logits") else outputs
         # Shift so tokens < n predict n
@@ -148,11 +150,7 @@ def _create_lm_loss_fn(input_ids: torch.Tensor) -> Callable:
         shift_labels = input_ids[..., 1:].contiguous()
         # Cross entropy
         loss_fct = torch.nn.CrossEntropyLoss()
-        loss = loss_fct(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1)
-        )
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
         return loss
+
     return lm_loss
-
-

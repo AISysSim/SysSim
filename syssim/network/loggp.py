@@ -56,6 +56,7 @@ class LogGPParams:
         >>> loggp.alpha  # L + 2*o + g
         1.7e-05
     """
+
     L: float  # latency (seconds)
     o: float  # per-message CPU overhead (seconds)
     G: float  # gap per byte (seconds/byte)

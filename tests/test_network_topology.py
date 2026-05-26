@@ -7,9 +7,15 @@ Tests cover:
 """
 
 import pytest
+
 from syssim.network import (
-    Resource, FullyConnectedTopology, RingTopology, SwitchTopology,
-    NVLinkMeshTopology, HierarchicalTopology, LogGPParams
+    FullyConnectedTopology,
+    HierarchicalTopology,
+    LogGPParams,
+    NVLinkMeshTopology,
+    Resource,
+    RingTopology,
+    SwitchTopology,
 )
 
 
@@ -306,8 +312,8 @@ class TestHierarchicalTopology:
 
     def test_creation(self):
         """Hierarchical topology can be created."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(
             num_nodes=4,
@@ -325,8 +331,8 @@ class TestHierarchicalTopology:
 
     def test_intra_node_path(self):
         """Intra-node path uses NVLink mesh."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(4, 8, 25e9, 12, 25e9, loggp_nvlink, loggp_ib)
 
@@ -339,8 +345,8 @@ class TestHierarchicalTopology:
 
     def test_inter_node_path(self):
         """Inter-node path uses InfiniBand."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(4, 8, 25e9, 12, 25e9, loggp_nvlink, loggp_ib)
 
@@ -355,8 +361,8 @@ class TestHierarchicalTopology:
 
     def test_get_loggp_intra_node(self):
         """get_loggp returns NVLink params for intra-node."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(4, 8, 25e9, 12, 25e9, loggp_nvlink, loggp_ib)
 
@@ -367,8 +373,8 @@ class TestHierarchicalTopology:
 
     def test_get_loggp_inter_node(self):
         """get_loggp returns InfiniBand params for inter-node."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(4, 8, 25e9, 12, 25e9, loggp_nvlink, loggp_ib)
 
@@ -379,8 +385,8 @@ class TestHierarchicalTopology:
 
     def test_rank_mapping(self):
         """Rank mapping works correctly."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(4, 8, 25e9, 12, 25e9, loggp_nvlink, loggp_ib)
 
@@ -402,8 +408,8 @@ class TestHierarchicalTopology:
 
     def test_all_resources(self):
         """all_resources includes both NVLink and InfiniBand."""
-        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1/(25e9*12))
-        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1/(25e9))
+        loggp_nvlink = LogGPParams(L=1e-6, o=5e-6, G=1 / (25e9 * 12))
+        loggp_ib = LogGPParams(L=5e-6, o=10e-6, G=1 / (25e9))
 
         topo = HierarchicalTopology(4, 8, 25e9, 12, 25e9, loggp_nvlink, loggp_ib)
 

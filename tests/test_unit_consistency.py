@@ -11,6 +11,7 @@ Verifies all unit conversions are correct:
 
 import pytest
 import torch
+
 from syssim.config import HardwareInfo
 from syssim.operator_graph import OperatorType
 
@@ -70,7 +71,7 @@ class TestBandwidthCalculation:
         Bandwidth: 3350 GB/s = 3.35e12 bytes/s
         Expected time: 24,576 / 3.35e12 = 7.34e-9 seconds = 7.34 ns
         """
-        hw_info = HardwareInfo(
+        HardwareInfo(
             peak_tflops_mm=989.0,
             peak_tflops_math=989.0,
             peak_memory_bandwidth_gbps=3350.0,
@@ -104,7 +105,7 @@ class TestBandwidthCalculation:
         Bandwidth: 3350 GB/s = 3.35e12 bytes/s
         Expected time: 100,663,296 / 3.35e12 = 30.05e-6 seconds = 30,050 ns = 0.03005 ms
         """
-        hw_info = HardwareInfo(
+        HardwareInfo(
             peak_tflops_mm=989.0,
             peak_tflops_math=989.0,
             peak_memory_bandwidth_gbps=3350.0,

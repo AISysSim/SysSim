@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+
 from syssim import HardwareInfo, SimulatorConfig
 from syssim.integrations.huggingface import (
     trace_hf_model_for_training,
@@ -9,15 +10,13 @@ from syssim.integrations.huggingface import (
 )
 
 try:
-    from transformers import GPT2LMHeadModel, AutoTokenizer
+    from transformers import AutoTokenizer, GPT2LMHeadModel
+
     HF_AVAILABLE = True
 except ImportError:
     HF_AVAILABLE = False
 
-requires_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA required for tracing"
-)
+requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for tracing")
 
 
 @pytest.fixture
@@ -145,11 +144,7 @@ class TestHuggingFaceTraining:
         model = gpt2_model
         tokenizer = gpt2_tokenizer
 
-        batch = tokenizer(
-            ["Hello world", "Machine learning"],
-            return_tensors="pt",
-            padding=True
-        )
+        batch = tokenizer(["Hello world", "Machine learning"], return_tensors="pt", padding=True)
         batch["labels"] = batch["input_ids"].clone()
 
         graph = trace_hf_training_step(model, batch, config)
@@ -200,6 +195,7 @@ def test_import_error_message():
     # This test is a bit contrived since we skip if HF not available
     # but it documents the expected behavior
     from syssim.integrations.huggingface import HF_AVAILABLE
+
     if HF_AVAILABLE:
         pytest.skip("transformers is installed")
 

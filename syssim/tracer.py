@@ -14,26 +14,26 @@ from typing import Any, Optional
 
 import torch
 import torch.nn as nn
+from torch._subclasses import FakeTensorMode
+from torch._subclasses.fake_tensor import DataDependentOutputException
+from torch._subclasses.fake_tensor import FakeTensor as _FakeTensor
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_flatten, tree_map
 from torch.utils.module_tracker import ModuleTracker
-from torch._subclasses import FakeTensorMode
-from torch._subclasses.fake_tensor import FakeTensor as _FakeTensor
-from torch._subclasses.fake_tensor import DataDependentOutputException
 
-from .config import ExecutionMode
-from .operator_graph import (
-    OperatorType,
-    TensorMeta,
-    OperatorNode,
-    OperatorGraph,
-)
 from .compute.compute_cost_predictor import (
-    _VIEW_OPS,
+    _ATTN_OPS,
     _CREATE_OPS,
     _GEMM_OPS,
-    _ATTN_OPS,
     _IGNORE_OPS,
+    _VIEW_OPS,
+)
+from .config import ExecutionMode
+from .operator_graph import (
+    OperatorGraph,
+    OperatorNode,
+    OperatorType,
+    TensorMeta,
 )
 
 log = logging.getLogger(__name__)
@@ -46,27 +46,30 @@ _TRACE_DEVICE = "cuda:0"
 # Metadata ops: compared by string name to avoid import-time errors for ops
 # that may not exist in all PyTorch versions.
 # ---------------------------------------------------------------------------
-_METADATA_PACKET_NAMES = frozenset({
-    "prim.device",
-    "prim.dtype",
-    "prim.layout",
-    "aten.sym_size",
-    "aten.sym_stride",
-    "aten.sym_storage_offset",
-    "aten.sym_numel",
-    "aten.is_contiguous",
-    "aten.is_strides_like_format",
-    "aten.is_non_overlapping_and_dense",
-    "aten.dim",
-    "aten.size",
-    "aten.stride",
-    "aten.storage_offset",
-    "aten.numel",
-})
+_METADATA_PACKET_NAMES = frozenset(
+    {
+        "prim.device",
+        "prim.dtype",
+        "prim.layout",
+        "aten.sym_size",
+        "aten.sym_stride",
+        "aten.sym_storage_offset",
+        "aten.sym_numel",
+        "aten.is_contiguous",
+        "aten.is_strides_like_format",
+        "aten.is_non_overlapping_and_dense",
+        "aten.dim",
+        "aten.size",
+        "aten.stride",
+        "aten.storage_offset",
+        "aten.numel",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Fake-CUDA helpers
 # ---------------------------------------------------------------------------
+
 
 def _to_fake_device(
     tensor: torch.Tensor,
@@ -136,13 +139,13 @@ def _restore_model(
         setattr(mod, dict_name, orig_dict)
 
 
-
 def _make_fake_inputs(
     inputs: Any,
     fake_mode: FakeTensorMode,
     device: str,
 ) -> "tuple | dict":
     """Normalize *inputs* to a tuple (or dict) and convert every tensor to fake CUDA."""
+
     def _convert(x: Any) -> Any:
         if isinstance(x, torch.Tensor):
             return _to_fake_device(x, fake_mode, device)
@@ -162,6 +165,7 @@ def _make_fake_inputs(
 # ---------------------------------------------------------------------------
 # Storage tracking
 # ---------------------------------------------------------------------------
+
 
 def _storage_key(tensor: torch.Tensor) -> int:
     """Return a key identifying the tensor's underlying storage.
@@ -208,6 +212,7 @@ class TensorStorageTracker:
 # ---------------------------------------------------------------------------
 # CUDA Event tracking
 # ---------------------------------------------------------------------------
+
 
 class CUDAEventTracker:
     """Monkey-patches torch.cuda.Event to intercept record/wait for sync tracking."""
@@ -278,6 +283,7 @@ class CUDAEventTracker:
 # ---------------------------------------------------------------------------
 # Op classification
 # ---------------------------------------------------------------------------
+
 
 def _extract_gemm_config(args: tuple) -> dict[str, Any]:
     """Extract M, N, K from matrix multiply args."""
@@ -363,6 +369,7 @@ def _classify_op(
 # TensorMeta helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_tensor_meta(t: torch.Tensor) -> TensorMeta:
     return TensorMeta(
         shape=tuple(t.shape),
@@ -380,6 +387,7 @@ def _collect_tensor_metas(pytree_val: Any) -> list[TensorMeta]:
 # _OperatorGraphTracerMode: the inner TorchDispatchMode
 # ---------------------------------------------------------------------------
 
+
 class _OperatorGraphTracerMode(TorchDispatchMode):
     """Intercepts PyTorch dispatched ops and builds an OperatorGraph."""
 
@@ -392,6 +400,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         hw_info: Any = None,
         execution_mode: Optional[ExecutionMode] = None,
         cache_seq_len: int = 0,
+        plena_estimator: Any = None,
     ) -> None:
         super().__init__()
         self._graph = graph
@@ -401,6 +410,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         self._hw_info = hw_info
         self._execution_mode = execution_mode
         self._cache_seq_len = cache_seq_len
+        self._plena_estimator = plena_estimator
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
@@ -486,13 +496,20 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
 
         # 7. Estimate time using predictor (decoupled)
         estimated_time_ms = 0.0
-        if self._hw_info is not None and func_packet not in _IGNORE_OPS:
+        if (self._hw_info is not None or self._plena_estimator is not None) and func_packet not in _IGNORE_OPS:
             try:
                 from .compute.compute_cost_predictor import estimate_runtime
+
                 estimated_time_ms = estimate_runtime(
-                    func_packet, args, kwargs, out, self._hw_info, op_type,
+                    func_packet,
+                    args,
+                    kwargs,
+                    out,
+                    self._hw_info,
+                    op_type,
                     execution_mode=self._execution_mode,
                     cache_seq_len=self._cache_seq_len,
+                    plena_estimator=self._plena_estimator,
                 )
             except Exception as e:
                 log.debug(f"Runtime estimation failed for {packet_name}: {e}")
@@ -526,6 +543,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
 # Distributed collective no-op context (for tracing with fake tensors)
 # ---------------------------------------------------------------------------
 
+
 class _MockDistHandle:
     """Mock handle returned by async distributed collectives during tracing.
 
@@ -533,6 +551,7 @@ class _MockDistHandle:
     calls handle.wait() in the backward pass. Since we replace real collectives
     with no-ops, we must return an object that responds to .wait().
     """
+
     def wait(self):
         pass
 
@@ -592,6 +611,7 @@ def _dist_noop_context():
 # OperatorGraphTracer: public API
 # ---------------------------------------------------------------------------
 
+
 class OperatorGraphTracer:
     """Traces a PyTorch model and builds an OperatorGraph.
 
@@ -607,10 +627,12 @@ class OperatorGraphTracer:
         hw_info: Any = None,
         execution_mode: Optional[ExecutionMode] = None,
         cache_seq_len: int = 0,
+        plena_estimator: Any = None,
     ) -> None:
         self._hw_info = hw_info
         self._execution_mode = execution_mode
         self._cache_seq_len = cache_seq_len
+        self._plena_estimator = plena_estimator
 
     def trace(
         self,
@@ -642,10 +664,13 @@ class OperatorGraphTracer:
             hw_info=self._hw_info,
             execution_mode=self._execution_mode,
             cache_seq_len=self._cache_seq_len,
+            plena_estimator=self._plena_estimator,
         )
 
         if loss_fn is None:
-            loss_fn = lambda out: out.sum() if isinstance(out, torch.Tensor) else out[0].sum()
+
+            def loss_fn(out):
+                return out.sum() if isinstance(out, torch.Tensor) else out[0].sum()
 
         # Use current CUDA device so multi-rank jobs (TP/PP/DP) trace on the
         # correct per-rank device rather than always cuda:0.

@@ -11,13 +11,15 @@ Tests are skipped if:
 - torch.distributed not available
 """
 
-import pytest
 import sys
+
+import pytest
 
 # Check if torch.distributed is available
 try:
     import torch
     import torch.distributed as dist
+
     HAS_TORCH_DISTRIBUTED = True
 except ImportError:
     HAS_TORCH_DISTRIBUTED = False
@@ -25,7 +27,10 @@ except ImportError:
 # Skip all tests if requirements not met
 pytestmark = pytest.mark.skipif(
     not HAS_TORCH_DISTRIBUTED or not torch.cuda.is_available() or torch.cuda.device_count() < 2,
-    reason="Requires PyTorch with CUDA and 2+ GPUs, run via: torchrun --nproc_per_node=2 -m pytest tests/test_nccl_backend.py"
+    reason=(
+        "Requires PyTorch with CUDA and 2+ GPUs, "
+        "run via: torchrun --nproc_per_node=2 -m pytest tests/test_nccl_backend.py"
+    ),
 )
 
 
@@ -146,7 +151,7 @@ def test_nccl_backend_multiple_runs(nccl_backend):
     if nccl_backend.is_client():
         # Coefficient of variation should be <30%
         mean = sum(times) / len(times)
-        std = (sum((t - mean)**2 for t in times) / len(times)) ** 0.5
+        std = (sum((t - mean) ** 2 for t in times) / len(times)) ** 0.5
         cv = std / mean
 
         assert cv < 0.3  # <30% variance
@@ -157,13 +162,7 @@ def test_sweep_message_sizes(nccl_backend):
     from syssim.network.profiler import sweep_message_sizes
 
     # Small sweep for testing
-    measurements = sweep_message_sizes(
-        nccl_backend,
-        min_size=1024,
-        max_size=8192,
-        n=5,
-        num_runs=3
-    )
+    measurements = sweep_message_sizes(nccl_backend, min_size=1024, max_size=8192, n=5, num_runs=3)
 
     if nccl_backend.is_client():
         # Should have measurements for sizes: 1024, 2048, 4096, 8192

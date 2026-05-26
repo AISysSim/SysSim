@@ -21,8 +21,10 @@ explicit receive dependencies would be redundant and overly conservative.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
+if TYPE_CHECKING:
+    from .loggp import LogGPParams
 
 # Type alias for communication steps
 # Each step is a list of concurrent sends: [(src, dst, size_bytes), ...]
@@ -53,12 +55,13 @@ class Op:
         >>> op.remaining_bytes  # Initialized to 0, set by simulator
         0.0
     """
+
     src: int
     dst: int
     size: float  # bytes
-    deps: list['Op'] = field(default_factory=list)
+    deps: list["Op"] = field(default_factory=list)
     tag: str = ""
-    loggp: Optional['LogGPParams'] = None  # For HierarchicalTopology layer-specific params
+    loggp: Optional["LogGPParams"] = None  # For HierarchicalTopology layer-specific params
 
     # Simulation state (populated by engine)
     remaining_bytes: float = 0.0
@@ -69,7 +72,7 @@ class Op:
         """Compact representation for debugging."""
         dep_str = f", deps={len(self.deps)}" if self.deps else ""
         tag_str = f", tag={self.tag}" if self.tag else ""
-        return f"Op({self.src}->{self.dst}, {self.size/1e6:.2f}MB{dep_str}{tag_str})"
+        return f"Op({self.src}->{self.dst}, {self.size / 1e6:.2f}MB{dep_str}{tag_str})"
 
 
 def build_dag(steps: list[Step], tag_prefix: str = "") -> list[Op]:

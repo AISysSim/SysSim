@@ -9,30 +9,31 @@ Tests the complete workflow:
 6. Use in simulation
 """
 
-import pytest
 import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
+from syssim.network import (
+    FullyConnectedTopology,
+    LogGPParams,
+    allreduce,
+    simulate,
+)
+from syssim.network.model_loader import (
+    get_protocol_for_size,
+    load_all_protocols,
+    load_loggp_params,
+)
+from syssim.network.profiler import (
+    ProfilingResult,
+    extract_loggp_parameters,
+    save_profiling_result,
+)
 from syssim.network.protocol_detector import (
     PRTTMeasurement,
     detect_protocol_changes,
-)
-from syssim.network.profiler import (
-    extract_loggp_parameters,
-    save_profiling_result,
-    ProfilingResult,
-)
-from syssim.network.model_loader import (
-    load_loggp_params,
-    load_all_protocols,
-    get_protocol_for_size,
-)
-from syssim.network import (
-    LogGPParams,
-    FullyConnectedTopology,
-    allreduce,
-    simulate,
 )
 
 
@@ -56,7 +57,7 @@ def generate_synthetic_prtt(L, o, g, G, sizes, n=10):
         gall = g + (s - 1) * G
 
         # PRTT(1, 0, s) = 2 * (L + 2*o + g + (s-1)*G)
-        prtt_1_0 = 2 * (L + 2*o + g + (s - 1)*G)
+        prtt_1_0 = 2 * (L + 2 * o + g + (s - 1) * G)
 
         # PRTT(n, 0, s) = PRTT(1, 0, s) + (n-1)*Gall
         prtt_n_0 = prtt_1_0 + (n - 1) * gall
@@ -101,9 +102,9 @@ def test_parameter_extraction_accuracy():
     """Test extraction accuracy across multiple parameter sets."""
     test_cases = [
         # (L, o, g, G)
-        (1e-6, 5e-6, 2e-6, 4e-11),   # NVLink-like
+        (1e-6, 5e-6, 2e-6, 4e-11),  # NVLink-like
         (5e-6, 10e-6, 5e-6, 8e-11),  # InfiniBand-like
-        (2e-6, 8e-6, 3e-6, 6e-11),   # Custom
+        (2e-6, 8e-6, 3e-6, 6e-11),  # Custom
     ]
 
     for L_true, o_true, g_true, G_true in test_cases:
@@ -125,35 +126,15 @@ def test_json_serialization_roundtrip():
     result = ProfilingResult(
         topology="nvlink",
         protocols=[
-            {
-                "size_range": [1, 12288],
-                "L": 1.5e-6,
-                "o": 7e-6,
-                "g": 2e-6,
-                "G": 4e-11
-            },
-            {
-                "size_range": [12289, 65536],
-                "L": 1.5e-6,
-                "o": 12e-6,
-                "g": 5e-6,
-                "G": 4e-11
-            }
+            {"size_range": [1, 12288], "L": 1.5e-6, "o": 7e-6, "g": 2e-6, "G": 4e-11},
+            {"size_range": [12289, 65536], "L": 1.5e-6, "o": 12e-6, "g": 5e-6, "G": 4e-11},
         ],
-        primary={
-            "L": 1.5e-6,
-            "o": 7e-6,
-            "g": 2e-6,
-            "G": 4e-11
-        },
-        metadata={
-            "timestamp": "2026-02-14T12:00:00",
-            "num_protocols": 2
-        }
+        primary={"L": 1.5e-6, "o": 7e-6, "g": 2e-6, "G": 4e-11},
+        metadata={"timestamp": "2026-02-14T12:00:00", "num_protocols": 2},
     )
 
     # Save to temporary file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         temp_path = Path(f.name)
 
     try:
@@ -178,25 +159,12 @@ def test_load_loggp_params_from_file():
     # Create temporary JSON file
     data = {
         "topology": "nvlink",
-        "protocols": [
-            {
-                "size_range": [1, 65536],
-                "L": 1.5e-6,
-                "o": 7e-6,
-                "g": 2e-6,
-                "G": 4e-11
-            }
-        ],
-        "primary": {
-            "L": 1.5e-6,
-            "o": 7e-6,
-            "g": 2e-6,
-            "G": 4e-11
-        },
-        "metadata": {}
+        "protocols": [{"size_range": [1, 65536], "L": 1.5e-6, "o": 7e-6, "g": 2e-6, "G": 4e-11}],
+        "primary": {"L": 1.5e-6, "o": 7e-6, "g": 2e-6, "G": 4e-11},
+        "metadata": {},
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         temp_path = Path(f.name)
 
@@ -219,31 +187,14 @@ def test_load_all_protocols():
     data = {
         "topology": "nvlink",
         "protocols": [
-            {
-                "size_range": [1, 12288],
-                "L": 1.5e-6,
-                "o": 7e-6,
-                "g": 2e-6,
-                "G": 4e-11
-            },
-            {
-                "size_range": [12289, 65536],
-                "L": 1.5e-6,
-                "o": 12e-6,
-                "g": 5e-6,
-                "G": 4e-11
-            }
+            {"size_range": [1, 12288], "L": 1.5e-6, "o": 7e-6, "g": 2e-6, "G": 4e-11},
+            {"size_range": [12289, 65536], "L": 1.5e-6, "o": 12e-6, "g": 5e-6, "G": 4e-11},
         ],
-        "primary": {
-            "L": 1.5e-6,
-            "o": 7e-6,
-            "g": 2e-6,
-            "G": 4e-11
-        },
-        "metadata": {}
+        "primary": {"L": 1.5e-6, "o": 7e-6, "g": 2e-6, "G": 4e-11},
+        "metadata": {},
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         temp_path = Path(f.name)
 
@@ -311,9 +262,7 @@ def test_hoefler_table2_validation():
 
     # Detect and extract
     protocols = detect_protocol_changes(measurements, n=10, lookahead=3, pfact=2.0)
-    L_extracted, o_extracted, g_extracted, G_extracted = extract_loggp_parameters(
-        measurements, protocols[0], n=10
-    )
+    L_extracted, o_extracted, g_extracted, G_extracted = extract_loggp_parameters(measurements, protocols[0], n=10)
 
     # Should match exactly (no noise)
     assert abs(L_extracted - L) < 1e-12
@@ -328,7 +277,7 @@ def test_profiled_params_in_simulation():
     loggp = LogGPParams(L=1.5e-6, o=7e-6, G=4e-11, g=2e-6)
 
     # Create topology
-    topo = FullyConnectedTopology(num_ranks=8, link_bandwidth=1.0/loggp.G)
+    topo = FullyConnectedTopology(num_ranks=8, link_bandwidth=1.0 / loggp.G)
 
     # Simulate allreduce
     ops = allreduce(list(range(8)), 1e6)  # 1 MB allreduce
@@ -348,20 +297,20 @@ def test_backward_compatibility_g_optional():
                 "size_range": [1, 65536],
                 "L": 1e-6,
                 "o": 5e-6,
-                "G": 4e-11
+                "G": 4e-11,
                 # No g field
             }
         ],
         "primary": {
             "L": 1e-6,
             "o": 5e-6,
-            "G": 4e-11
+            "G": 4e-11,
             # No g field
         },
-        "metadata": {}
+        "metadata": {},
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         temp_path = Path(f.name)
 
@@ -386,7 +335,7 @@ def test_topology_bandwidth_consistency():
     g = 2e-6
     G = 4e-11  # 1/G = 25 GB/s
 
-    loggp = LogGPParams(L=L, o=o, G=G, g=g)
+    LogGPParams(L=L, o=o, G=G, g=g)
 
     # Create topology with matching bandwidth
     expected_bw = 1.0 / G
@@ -405,7 +354,7 @@ def test_load_missing_file_error():
 
 def test_load_malformed_json_error():
     """Test that malformed JSON raises ValueError."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         f.write("{invalid json")
         temp_path = Path(f.name)
 
@@ -422,10 +371,10 @@ def test_load_missing_primary_field_error():
         "topology": "test",
         "protocols": [],
         # Missing "primary" field
-        "metadata": {}
+        "metadata": {},
     }
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         temp_path = Path(f.name)
 

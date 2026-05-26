@@ -13,6 +13,7 @@ References:
 """
 
 import math
+
 from .loggp import LogGPParams
 
 

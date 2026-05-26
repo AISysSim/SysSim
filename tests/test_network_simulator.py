@@ -9,9 +9,14 @@ Tests cover:
 """
 
 import pytest
+
 from syssim.network import (
-    Op, simulate, SimulationResult,
-    FullyConnectedTopology, LogGPParams, Resource, Topology,
+    FullyConnectedTopology,
+    LogGPParams,
+    Op,
+    Resource,
+    Topology,
+    simulate,
 )
 
 
@@ -21,7 +26,7 @@ class TestSimulateBasic:
     def test_empty_ops(self):
         """Empty ops list returns zero makespan."""
         topo = FullyConnectedTopology(2, 1e9)
-        loggp = LogGPParams(L=0, o=0, G=1/1e9)
+        loggp = LogGPParams(L=0, o=0, G=1 / 1e9)
 
         result = simulate([], topo, loggp)
 
@@ -33,7 +38,7 @@ class TestSimulateBasic:
         """Single message transfers at full bandwidth."""
         # Setup: 1 GB/s link, 1 MB message
         topo = FullyConnectedTopology(2, 1e9)
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
 
         # Create single op
         op = Op(src=0, dst=1, size=1e6)
@@ -50,7 +55,7 @@ class TestSimulateBasic:
     def test_loggp_overhead(self):
         """LogGP overhead (alpha = L + 2*o) added to finish time."""
         topo = FullyConnectedTopology(2, 1e9)
-        loggp = LogGPParams(L=10e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=10e-6, o=5e-6, G=1 / 1e9)
 
         # Small message (10 KB) -> transfer time negligible
         op = Op(src=0, dst=1, size=1e4)
@@ -64,7 +69,7 @@ class TestSimulateBasic:
     def test_zero_size_message(self):
         """Zero-size message completes with only LogGP overhead."""
         topo = FullyConnectedTopology(2, 1e9)
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
 
         op = Op(src=0, dst=1, size=0.0)
         result = simulate([op], topo, loggp)
@@ -83,6 +88,7 @@ class TestSimulateBandwidthSharing:
 
         Setup: Simple topology where 0->2 and 1->2 share the same link to rank 2.
         """
+
         # Custom topology: all messages to rank 2 share one resource
         class SharedLinkTopology(Topology):
             def __init__(self):
@@ -99,7 +105,7 @@ class TestSimulateBandwidthSharing:
                 return [self.link_to_2, self.other_link]
 
         topo = SharedLinkTopology()
-        loggp = LogGPParams(L=0, o=0, G=1/1e9)
+        loggp = LogGPParams(L=0, o=0, G=1 / 1e9)
 
         # Two concurrent messages to rank 2
         op1 = Op(src=0, dst=2, size=1e6)  # 1 MB
@@ -117,7 +123,7 @@ class TestSimulateBandwidthSharing:
     def test_two_messages_different_links(self):
         """Two concurrent messages on different links don't interfere."""
         topo = FullyConnectedTopology(4, 1e9)
-        loggp = LogGPParams(L=0, o=0, G=1/1e9)
+        loggp = LogGPParams(L=0, o=0, G=1 / 1e9)
 
         # Different pairs -> different resources
         op1 = Op(src=0, dst=1, size=1e6)
@@ -139,7 +145,7 @@ class TestSimulateDependencies:
     def test_serial_dependency(self):
         """Op with dependency starts after dependency finishes."""
         topo = FullyConnectedTopology(3, 1e9)
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
 
         # Create dependency chain: op1 -> op2
         op1 = Op(src=0, dst=1, size=1e6)  # 1 MB
@@ -162,7 +168,7 @@ class TestSimulateDependencies:
     def test_multiple_dependencies(self):
         """Op waits for all dependencies to complete."""
         topo = FullyConnectedTopology(4, 1e9)
-        loggp = LogGPParams(L=0, o=0, G=1/1e9)
+        loggp = LogGPParams(L=0, o=0, G=1 / 1e9)
 
         # Create diamond dependency:
         #   op1 (0->1, 1 MB)
@@ -191,7 +197,7 @@ class TestSimulateResultFields:
     def test_per_rank_finish(self):
         """per_rank_finish tracks latest finish time per rank."""
         topo = FullyConnectedTopology(4, 1e9)
-        loggp = LogGPParams(L=0, o=0, G=1/1e9)
+        loggp = LogGPParams(L=0, o=0, G=1 / 1e9)
 
         # Rank 0 sends twice
         op1 = Op(src=0, dst=1, size=1e6)  # finishes at 1 ms
@@ -211,7 +217,7 @@ class TestSimulateResultFields:
     def test_makespan_is_max_finish(self):
         """Makespan equals max finish time across all ops."""
         topo = FullyConnectedTopology(4, 1e9)
-        loggp = LogGPParams(L=0, o=0, G=1/1e9)
+        loggp = LogGPParams(L=0, o=0, G=1 / 1e9)
 
         ops = [
             Op(src=0, dst=1, size=1e6),  # 1 ms
@@ -229,7 +235,7 @@ class TestSimulateEdgeCases:
     def test_self_send(self):
         """Message from rank to itself completes instantly."""
         topo = FullyConnectedTopology(2, 1e9)
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/1e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 1e9)
 
         # src == dst
         op = Op(src=0, dst=0, size=1e6)
@@ -243,7 +249,7 @@ class TestSimulateEdgeCases:
     def test_large_message(self):
         """Large message transfer works correctly."""
         topo = FullyConnectedTopology(2, 100e9)  # 100 GB/s
-        loggp = LogGPParams(L=1e-6, o=5e-6, G=1/100e9)
+        loggp = LogGPParams(L=1e-6, o=5e-6, G=1 / 100e9)
 
         # 10 GB message
         op = Op(src=0, dst=1, size=10e9)
@@ -266,8 +272,8 @@ class TestSimulateEdgeCases:
     def test_op_specific_loggp(self):
         """Op-specific LogGP params override global params."""
         topo = FullyConnectedTopology(2, 1e9)
-        global_loggp = LogGPParams(L=10e-6, o=10e-6, G=1/1e9)
-        op_loggp = LogGPParams(L=1e-6, o=1e-6, G=1/1e9)
+        global_loggp = LogGPParams(L=10e-6, o=10e-6, G=1 / 1e9)
+        op_loggp = LogGPParams(L=1e-6, o=1e-6, G=1 / 1e9)
 
         # Op with specific LogGP
         op = Op(src=0, dst=1, size=1e6)

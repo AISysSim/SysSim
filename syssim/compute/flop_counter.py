@@ -1,19 +1,22 @@
 # mypy: allow-untyped-defs
-from types import NoneType
+try:
+    from types import NoneType
+except ImportError:
+    # Python < 3.10 compatibility
+    NoneType = type(None)
 import logging
-import torch
-from torch.utils._pytree import tree_map, tree_flatten, tree_unflatten, arg_tree_leaves
-from torch.utils.module_tracker import ModuleTracker
-from typing import Any, TypeVar, Optional
-from collections.abc import Callable
-from collections.abc import Iterator
-from typing_extensions import ParamSpec
-from collections import defaultdict
-from torch.utils._python_dispatch import TorchDispatchMode
-from math import prod
-from functools import wraps
 import warnings
-from torch._subclasses import FakeTensorMode
+from collections import defaultdict
+from collections.abc import Callable, Iterator
+from functools import wraps
+from math import prod
+from typing import Any, Optional, TypeVar
+
+import torch
+from torch.utils._python_dispatch import TorchDispatchMode
+from torch.utils._pytree import tree_flatten, tree_map, tree_unflatten
+from torch.utils.module_tracker import ModuleTracker
+from typing_extensions import ParamSpec
 
 __all__ = ["FlopCounterMode", "register_flop_formula"]
 
@@ -33,19 +36,24 @@ except ImportError:
 
 aten = torch.ops.aten
 
+
 def get_shape(i):
     if isinstance(i, torch.Tensor):
         return i.shape
     return i
 
+
 flop_registry: dict[Any, Any] = {}
+
 
 def shape_wrapper(f):
     @wraps(f)
     def nf(*args, out_val=None, **kwargs):
         args, kwargs, out_shape = tree_map(get_shape, (args, kwargs, out_val))
         return f(*args, out_shape=out_shape, **kwargs)
+
     return nf
+
 
 def register_flop_formula(targets, get_raw=False) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:
 
@@ -58,7 +66,8 @@ def register_flop_formula(targets, get_raw=False) -> Callable[[Callable[_P, _T]]
                 raise ValueError(
                     f"register_flop_formula(targets): expected each target to be "
                     f"OpOverloadPacket (i.e. torch.ops.mylib.foo), or JitFunction"
-                    f", got {target} which is of type {type(target)}")
+                    f", got {target} which is of type {type(target)}"
+                )
             if target in flop_registry:
                 raise RuntimeError(f"duplicate registrations for {target}")
             flop_registry[target] = flop_formula
@@ -69,6 +78,7 @@ def register_flop_formula(targets, get_raw=False) -> Callable[[Callable[_P, _T]]
         return flop_formula
 
     return register_fun
+
 
 @register_flop_formula(aten.mm)
 def mm_flop(a_shape, b_shape, *args, out_shape=None, **kwargs) -> int:
@@ -82,10 +92,12 @@ def mm_flop(a_shape, b_shape, *args, out_shape=None, **kwargs) -> int:
     # NB(chilli): Should be 2 * k - 1 technically for FLOPs.
     return m * n * 2 * k
 
+
 @register_flop_formula(aten.addmm)
 def addmm_flop(self_shape, a_shape, b_shape, out_shape=None, **kwargs) -> int:
     """Count flops for addmm."""
     return mm_flop(a_shape, b_shape)
+
 
 @register_flop_formula(aten.bmm)
 def bmm_flop(a_shape, b_shape, out_shape=None, **kwargs) -> int:
@@ -102,12 +114,14 @@ def bmm_flop(a_shape, b_shape, out_shape=None, **kwargs) -> int:
     flop = b * m * n * 2 * k
     return flop
 
+
 @register_flop_formula(aten.baddbmm)
 def baddbmm_flop(self_shape, a_shape, b_shape, out_shape=None, **kwargs) -> int:
     """Count flops for the baddbmm operation."""
     # Inputs should be a list of length 3.
     # Inputs contains the shapes of three tensors.
     return bmm_flop(a_shape, b_shape)
+
 
 @register_flop_formula(aten._scaled_mm)
 def _scaled_mm_flop(
@@ -164,12 +178,19 @@ def conv_flop_count(
     flop = prod(conv_shape) * prod(filter_size) * batch_size * c_out * c_in * 2
     return flop
 
-@register_flop_formula([aten.convolution,
-                        aten._convolution,
-                        aten.cudnn_convolution,
-                        aten._slow_conv2d_forward,
-                        aten.convolution_overrideable])
-def conv_flop(x_shape, w_shape, _bias, _stride, _padding, _dilation, transposed, *args, out_shape=None, **kwargs) -> int:
+
+@register_flop_formula(
+    [
+        aten.convolution,
+        aten._convolution,
+        aten.cudnn_convolution,
+        aten._slow_conv2d_forward,
+        aten.convolution_overrideable,
+    ]
+)
+def conv_flop(
+    x_shape, w_shape, _bias, _stride, _padding, _dilation, transposed, *args, out_shape=None, **kwargs
+) -> int:
     """Count flops for convolution."""
     # pyrefly: ignore [bad-argument-type]
     return conv_flop_count(x_shape, w_shape, out_shape, transposed=transposed)
@@ -177,21 +198,23 @@ def conv_flop(x_shape, w_shape, _bias, _stride, _padding, _dilation, transposed,
 
 @register_flop_formula(aten.convolution_backward)
 def conv_backward_flop(
-        grad_out_shape,
-        x_shape,
-        w_shape,
-        _bias,
-        _stride,
-        _padding,
-        _dilation,
-        transposed,
-        _output_padding,
-        _groups,
-        output_mask,
-        out_shape) -> int:
+    grad_out_shape,
+    x_shape,
+    w_shape,
+    _bias,
+    _stride,
+    _padding,
+    _dilation,
+    transposed,
+    _output_padding,
+    _groups,
+    output_mask,
+    out_shape,
+) -> int:
 
     def t(shape):
         return [shape[1], shape[0]] + list(shape[2:])
+
     flop_count = 0
 
     """
@@ -279,6 +302,7 @@ def conv_backward_flop(
 
     return flop_count
 
+
 def sdpa_flop_count(query_shape, key_shape, value_shape):
     """
     Count flops for self-attention, including GQA (Grouped Query Attention).
@@ -300,9 +324,13 @@ def sdpa_flop_count(query_shape, key_shape, value_shape):
     return total_flops
 
 
-@register_flop_formula([aten._scaled_dot_product_efficient_attention,
-                        aten._scaled_dot_product_flash_attention,
-                        aten._scaled_dot_product_cudnn_attention])
+@register_flop_formula(
+    [
+        aten._scaled_dot_product_efficient_attention,
+        aten._scaled_dot_product_flash_attention,
+        aten._scaled_dot_product_cudnn_attention,
+    ]
+)
 def sdpa_flop(query_shape, key_shape, value_shape, *args, out_shape=None, **kwargs) -> int:
     """Count flops for self-attention."""
     # NB: We aren't accounting for causal attention here
@@ -316,6 +344,7 @@ def _offsets_to_lengths(offsets, max_len):
     """
     from torch._subclasses.fake_tensor import FakeTensor
     from torch._subclasses.functional_tensor import FunctionalTensor
+
     if not isinstance(offsets, (FakeTensor, FunctionalTensor)) and offsets.device.type != "meta":
         return offsets.diff().tolist()
     return [max_len] * (offsets.size(0) - 1)
@@ -331,7 +360,7 @@ def _unpack_flash_attention_nested_shapes(
     cum_seq_k,
     max_q,
     max_k,
-) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...] | None]]:
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], Optional[tuple[int, ...]]]]:
     """
     Given inputs to a flash_attention_(forward|backward) kernel, this will handle behavior for
     NestedTensor inputs by effectively unbinding the NestedTensor and yielding the shapes for
@@ -362,7 +391,7 @@ def _unpack_flash_attention_nested_shapes(
             raise AssertionError("sdpa_flop_count: cum_seq_q and cum_seq_k must have the same shape")
         seq_q_lengths = _offsets_to_lengths(cum_seq_q, max_q)
         seq_k_lengths = _offsets_to_lengths(cum_seq_k, max_k)
-        for (seq_q_len, seq_k_len) in zip(seq_q_lengths, seq_k_lengths, strict=True):
+        for seq_q_len, seq_k_len in zip(seq_q_lengths, seq_k_lengths, strict=True):
             new_query_shape = (1, h_q, seq_q_len, d_q)
             new_key_shape = (1, h_k, seq_k_len, d_k)
             new_value_shape = (1, h_v, seq_k_len, d_v)
@@ -383,7 +412,7 @@ def _unpack_efficient_attention_nested_shapes(
     cu_seqlens_k,
     max_seqlen_q,
     max_seqlen_k,
-) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...] | None]]:
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], Optional[tuple[int, ...]]]]:
     """
     Given inputs to a efficient_attention_(forward|backward) kernel, this will handle behavior for
     NestedTensor inputs by effectively unbinding the NestedTensor and yielding the shapes for
@@ -404,7 +433,9 @@ def _unpack_efficient_attention_nested_shapes(
         if len(value.shape) != 4:
             raise AssertionError("_unpack_efficient_attention_nested_shapes: expected value.shape to be 4-dimensional")
         if grad_out is not None and grad_out.shape != query.shape:
-            raise AssertionError("_unpack_efficient_attention_nested_shapes: grad_out.shape must match query.shape when provided")
+            raise AssertionError(
+                "_unpack_efficient_attention_nested_shapes: grad_out.shape must match query.shape when provided"
+            )
         _, _, h_q, d_q = query.shape
         _, _, h_k, d_k = key.shape
         _, _, h_v, d_v = value.shape
@@ -413,8 +444,9 @@ def _unpack_efficient_attention_nested_shapes(
         if cu_seqlens_k is None:
             raise AssertionError("_unpack_efficient_attention_nested_shapes: cu_seqlens_k must not be None")
         if cu_seqlens_q.shape != cu_seqlens_k.shape:
-            raise AssertionError("_unpack_efficient_attention_nested_shapes: "
-                                 "cu_seqlens_q and cu_seqlens_k must have the same shape")
+            raise AssertionError(
+                "_unpack_efficient_attention_nested_shapes: cu_seqlens_q and cu_seqlens_k must have the same shape"
+            )
         seqlens_q = _offsets_to_lengths(cu_seqlens_q, max_seqlen_q)
         seqlens_k = _offsets_to_lengths(cu_seqlens_k, max_seqlen_k)
         for len_q, len_k in zip(seqlens_q, seqlens_k, strict=True):
@@ -430,16 +462,7 @@ def _unpack_efficient_attention_nested_shapes(
 
 @register_flop_formula(aten._flash_attention_forward, get_raw=True)
 def _flash_attention_forward_flop(
-    query,
-    key,
-    value,
-    cum_seq_q,
-    cum_seq_k,
-    max_q,
-    max_k,
-    *args,
-    out_shape=None,
-    **kwargs
+    query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, *args, out_shape=None, **kwargs
 ) -> int:
     """Count flops for self-attention."""
     # NB: We aren't accounting for causal attention here
@@ -454,24 +477,12 @@ def _flash_attention_forward_flop(
         max_q=max_q,
         max_k=max_k,
     )
-    return sum(
-        sdpa_flop_count(query_shape, key_shape, value_shape)
-        for query_shape, key_shape, value_shape, _ in sizes
-    )
+    return sum(sdpa_flop_count(query_shape, key_shape, value_shape) for query_shape, key_shape, value_shape, _ in sizes)
 
 
 @register_flop_formula(aten._efficient_attention_forward, get_raw=True)
 def _efficient_attention_forward_flop(
-    query,
-    key,
-    value,
-    bias,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    max_seqlen_q,
-    max_seqlen_k,
-    *args,
-    **kwargs
+    query, key, value, bias, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, *args, **kwargs
 ) -> int:
     """Count flops for self-attention."""
     # NB: We aren't accounting for causal attention here
@@ -486,10 +497,7 @@ def _efficient_attention_forward_flop(
         max_seqlen_q=max_seqlen_q,
         max_seqlen_k=max_seqlen_k,
     )
-    return sum(
-        sdpa_flop_count(query_shape, key_shape, value_shape)
-        for query_shape, key_shape, value_shape, _ in sizes
-    )
+    return sum(sdpa_flop_count(query_shape, key_shape, value_shape) for query_shape, key_shape, value_shape, _ in sizes)
 
 
 def sdpa_backward_flop_count(grad_out_shape, query_shape, key_shape, value_shape):
@@ -521,12 +529,17 @@ def sdpa_backward_flop_count(grad_out_shape, query_shape, key_shape, value_shape
     return total_flops
 
 
-@register_flop_formula([aten._scaled_dot_product_efficient_attention_backward,
-                        aten._scaled_dot_product_flash_attention_backward,
-                        aten._scaled_dot_product_cudnn_attention_backward])
+@register_flop_formula(
+    [
+        aten._scaled_dot_product_efficient_attention_backward,
+        aten._scaled_dot_product_flash_attention_backward,
+        aten._scaled_dot_product_cudnn_attention_backward,
+    ]
+)
 def sdpa_backward_flop(grad_out_shape, query_shape, key_shape, value_shape, *args, out_shape=None, **kwargs) -> int:
     """Count flops for self-attention backward."""
     return sdpa_backward_flop_count(grad_out_shape, query_shape, key_shape, value_shape)
+
 
 @register_flop_formula(aten._flash_attention_backward, get_raw=True)
 def _flash_attention_backward_flop(
@@ -618,6 +631,7 @@ flop_registry = {
     aten._efficient_attention_backward: _efficient_attention_backward_flop,
 }
 
+
 def normalize_tuple(x):
     if not isinstance(x, tuple):
         return (x,)
@@ -626,6 +640,8 @@ def normalize_tuple(x):
 
 # Define the suffixes for different orders of magnitude
 suffixes = ["", "K", "M", "B", "T"]
+
+
 # Thanks BingChat!
 def get_suffix_str(number):
     # Find the index of the appropriate suffix based on the number of digits
@@ -634,17 +650,20 @@ def get_suffix_str(number):
     index = max(0, min(len(suffixes) - 1, (len(str(number)) - 2) // 3))
     return suffixes[index]
 
+
 def convert_num_with_suffix(number, suffix):
     index = suffixes.index(suffix)
     # Divide the number by 1000^index and format it to two decimal places
-    value = f"{number / 1000 ** index:.3f}"
+    value = f"{number / 1000**index:.3f}"
     # Return the value and the suffix as a string
     return value + suffixes[index]
+
 
 def convert_to_percent_str(num, denom) -> str:
     if denom == 0:
         return "0%"
     return f"{num / denom:.2%}"
+
 
 def _pytreeify_preserve_structure(f):
     @wraps(f)
@@ -677,28 +696,29 @@ class FlopCounterMode:
     """
 
     def __init__(
-            self,
-            mods: torch.nn.Module | list[torch.nn.Module] | None = None,
-            depth: int = 2,
-            display: bool = True,
-            custom_mapping: dict[Any, Any] | None = None) -> None:
+        self,
+        mods: Optional[Any] = None,
+        depth: int = 2,
+        display: bool = True,
+        custom_mapping: Optional[dict[Any, Any]] = None,
+    ) -> None:
         super().__init__()
         self.flop_counts: dict[str, dict[Any, int]] = defaultdict(lambda: defaultdict(int))
         self.depth = depth
         self.display = display
-        self.mode: _FlopCounterMode | None = None
+        self.mode: Optional[_FlopCounterMode] = None
         if custom_mapping is None:
             custom_mapping = {}
         if mods is not None:
             warnings.warn("mods argument is not needed anymore, you can stop passing it", stacklevel=2)
         self.flop_registry = {
             **flop_registry,
-            **{k: v if getattr(v, "_get_raw", False) else shape_wrapper(v) for k, v in custom_mapping.items()}
+            **{k: v if getattr(v, "_get_raw", False) else shape_wrapper(v) for k, v in custom_mapping.items()},
         }
         self.mod_tracker = ModuleTracker()
 
     def get_total_flops(self) -> int:
-        return sum(self.flop_counts['Global'].values())
+        return sum(self.flop_counts["Global"].values())
 
     def get_flop_counts(self) -> dict[str, dict[Any, int]]:
         """Return the flop counts as a dictionary of dictionaries.
@@ -718,7 +738,6 @@ class FlopCounterMode:
         if depth is None:
             depth = 999999
 
-
         import tabulate
 
         tabulate.PRESERVE_WHITESPACE = True
@@ -737,21 +756,25 @@ class FlopCounterMode:
 
             padding = " " * depth
             values = []
-            values.append([
-                padding + mod_name,
-                convert_num_with_suffix(total_flops, global_suffix),
-                convert_to_percent_str(total_flops, global_flops)
-            ])
+            values.append(
+                [
+                    padding + mod_name,
+                    convert_num_with_suffix(total_flops, global_suffix),
+                    convert_to_percent_str(total_flops, global_flops),
+                ]
+            )
             for k, v in self.flop_counts[mod_name].items():
-                values.append([
-                    padding + " - " + str(k),
-                    convert_num_with_suffix(v, global_suffix),
-                    convert_to_percent_str(v, global_flops)
-                ])
+                values.append(
+                    [
+                        padding + " - " + str(k),
+                        convert_num_with_suffix(v, global_suffix),
+                        convert_to_percent_str(v, global_flops),
+                    ]
+                )
             return values
 
         for mod in sorted(self.flop_counts.keys()):
-            if mod == 'Global':
+            if mod == "Global":
                 continue
             mod_depth = mod.count(".") + 1
             if mod_depth > depth:
@@ -763,11 +786,11 @@ class FlopCounterMode:
         # We do a bit of messing around here to only output the "Global" value
         # if there are any FLOPs in there that aren't already fully contained by
         # a module.
-        if 'Global' in self.flop_counts and not is_global_subsumed:
+        if "Global" in self.flop_counts and not is_global_subsumed:
             for value in values:
                 value[0] = " " + value[0]
 
-            values = process_mod('Global', 0) + values
+            values = process_mod("Global", 0) + values
 
         if len(values) == 0:
             values = [["Global", "0", "0%"]]
@@ -800,6 +823,7 @@ class FlopCounterMode:
                 self.flop_counts[par][func_packet] += flop_count
         return out
 
+
 class _FlopCounterMode(TorchDispatchMode):
     supports_higher_order_operators = True
 
@@ -819,6 +843,7 @@ class _FlopCounterMode(TorchDispatchMode):
             and flop_counts is a copy of the FLOP counts after execution
         """
         import copy
+
         checkpointed_flop_counts = copy.copy(self.counter.flop_counts)
         with self:
             result = branch_fn(*operands)
@@ -827,12 +852,16 @@ class _FlopCounterMode(TorchDispatchMode):
         return result, flop_counts
 
     def _handle_higher_order_ops(self, func, types, args, kwargs):
-        is_triton = func in {torch.ops.higher_order.triton_kernel_wrapper_mutation,
-                             torch.ops.higher_order.triton_kernel_wrapper_functional}
+        is_triton = func in {
+            torch.ops.higher_order.triton_kernel_wrapper_mutation,
+            torch.ops.higher_order.triton_kernel_wrapper_functional,
+        }
         if is_triton:
             from torch._higher_order_ops.triton_kernel_wrap import get_kernel
+
             # Special case - look in the triton flop registry for the kernel
             from triton.runtime.jit import JITFunction
+
             kernel_name = get_kernel(kwargs["kernel_idx"])
             # Unwrap heuristics if they are present
             while not isinstance(kernel_name, JITFunction):
@@ -848,15 +877,11 @@ class _FlopCounterMode(TorchDispatchMode):
             # record the larger number of flops, i.e. 2 times.
             pred, true_branch, false_branch, operands = args
             # Step 1: Count flops for true branch and false branch separately
-            true_out, true_flop_counts = self._execute_with_isolated_flop_counting(
-                true_branch, operands
-            )
+            true_out, true_flop_counts = self._execute_with_isolated_flop_counting(true_branch, operands)
             if true_out is NotImplemented:
                 return NotImplemented
 
-            false_out, false_flop_counts = self._execute_with_isolated_flop_counting(
-                false_branch, operands
-            )
+            false_out, false_flop_counts = self._execute_with_isolated_flop_counting(false_branch, operands)
             if false_out is NotImplemented:
                 return NotImplemented
 
@@ -891,22 +916,23 @@ class _FlopCounterMode(TorchDispatchMode):
         kwargs = kwargs if kwargs else {}
 
         # Skip ops from non-standard dispatch_sizes_strides_policy such as NJT
-        if func in {torch.ops.aten.sym_is_contiguous.default,
-                    torch.ops.aten.is_contiguous.default,
-                    torch.ops.aten.is_contiguous.memory_format,
-                    torch.ops.aten.is_strides_like_format.default,
-                    torch.ops.aten.is_non_overlapping_and_dense.default,
-                    torch.ops.aten.size.default,
-                    torch.ops.aten.sym_size.default,
-                    torch.ops.aten.stride.default,
-                    torch.ops.aten.sym_stride.default,
-                    torch.ops.aten.storage_offset.default,
-                    torch.ops.aten.sym_storage_offset.default,
-                    torch.ops.aten.numel.default,
-                    torch.ops.aten.sym_numel.default,
-                    torch.ops.aten.dim.default,
-                    torch.ops.prim.layout.default}:
-
+        if func in {
+            torch.ops.aten.sym_is_contiguous.default,
+            torch.ops.aten.is_contiguous.default,
+            torch.ops.aten.is_contiguous.memory_format,
+            torch.ops.aten.is_strides_like_format.default,
+            torch.ops.aten.is_non_overlapping_and_dense.default,
+            torch.ops.aten.size.default,
+            torch.ops.aten.sym_size.default,
+            torch.ops.aten.stride.default,
+            torch.ops.aten.sym_stride.default,
+            torch.ops.aten.storage_offset.default,
+            torch.ops.aten.sym_storage_offset.default,
+            torch.ops.aten.numel.default,
+            torch.ops.aten.sym_numel.default,
+            torch.ops.aten.dim.default,
+            torch.ops.prim.layout.default,
+        }:
             return NotImplemented
 
         if isinstance(func, torch._ops.HigherOrderOperator):

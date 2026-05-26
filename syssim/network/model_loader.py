@@ -19,7 +19,7 @@ Example:
 
 import json
 from pathlib import Path
-from typing import List, Tuple, Union, Dict, Callable
+from typing import Callable, Dict, List, Tuple, Union
 
 from .loggp import LogGPParams
 
@@ -89,7 +89,7 @@ def load_loggp_params(topology: Union[str, Path]) -> LogGPParams:
         L=primary["L"],
         o=primary["o"],
         G=primary["G"],
-        g=primary.get("g", 0.0)  # Backward compatibility
+        g=primary.get("g", 0.0),  # Backward compatibility
     )
 
 
@@ -157,10 +157,7 @@ def load_all_protocols(topology: Union[str, Path]) -> List[Tuple[Tuple[int, int]
 
         # Create LogGPParams
         params = LogGPParams(
-            L=protocol.get("L", 0.0),
-            o=protocol.get("o", 0.0),
-            G=protocol.get("G", 0.0),
-            g=protocol.get("g", 0.0)
+            L=protocol.get("L", 0.0), o=protocol.get("o", 0.0), G=protocol.get("G", 0.0), g=protocol.get("g", 0.0)
         )
 
         result.append(((min_size, max_size), params))
@@ -168,10 +165,7 @@ def load_all_protocols(topology: Union[str, Path]) -> List[Tuple[Tuple[int, int]
     return result
 
 
-def get_protocol_for_size(
-    protocols: List[Tuple[Tuple[int, int], LogGPParams]],
-    size: int
-) -> LogGPParams:
+def get_protocol_for_size(protocols: List[Tuple[Tuple[int, int], LogGPParams]], size: int) -> LogGPParams:
     """Get appropriate LogGP parameters for a given message size.
 
     Args:
@@ -283,8 +277,7 @@ def load_hierarchical_loggp(topology: Union[str, Path]) -> Dict[str, LogGPParams
     # Check if hierarchical
     if "layers" not in data or not isinstance(data["layers"], dict):
         raise ValueError(
-            f"Expected hierarchical format (with 'layers' dict), got single-layer. "
-            f"Use load_loggp_params() instead."
+            "Expected hierarchical format (with 'layers' dict), got single-layer. Use load_loggp_params() instead."
         )
 
     # Extract parameters for each layer
@@ -305,7 +298,7 @@ def load_hierarchical_loggp(topology: Union[str, Path]) -> Dict[str, LogGPParams
             L=primary["L"],
             o=primary["o"],
             G=primary["G"],
-            g=primary.get("g", 0.0)  # Backward compatibility
+            g=primary.get("g", 0.0),  # Backward compatibility
         )
 
     return result
@@ -315,7 +308,7 @@ def get_layer_params(
     hierarchical_params: Dict[str, LogGPParams],
     src_rank: int,
     dst_rank: int,
-    topology_map: Dict[str, Callable[[int, int], bool]]
+    topology_map: Dict[str, Callable[[int, int], bool]],
 ) -> LogGPParams:
     """Get LogGP parameters for communication between src and dst ranks.
 
@@ -358,6 +351,5 @@ def get_layer_params(
 
     # No matching layer
     raise ValueError(
-        f"No layer found for ranks {src_rank} -> {dst_rank}. "
-        f"Available layers: {list(hierarchical_params.keys())}"
+        f"No layer found for ranks {src_rank} -> {dst_rank}. Available layers: {list(hierarchical_params.keys())}"
     )
