@@ -1,0 +1,126 @@
+{
+  "status": "ok",
+  "model": "Qwen/Qwen3.5-9B",
+  "model_scale": "full",
+  "model_config": {
+    "transformers_version": "5.9.0",
+    "architectures": null,
+    "output_hidden_states": false,
+    "return_dict": true,
+    "dtype": null,
+    "chunk_size_feed_forward": 0,
+    "is_encoder_decoder": false,
+    "id2label": {
+      "0": "LABEL_0",
+      "1": "LABEL_1"
+    },
+    "label2id": {
+      "LABEL_0": 0,
+      "LABEL_1": 1
+    },
+    "problem_type": null,
+    "vocab_size": 248320,
+    "hidden_size": 4096,
+    "intermediate_size": 12288,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 16,
+    "num_key_value_heads": 4,
+    "head_dim": 256,
+    "hidden_act": "silu",
+    "max_position_embeddings": 262144,
+    "initializer_range": 0.02,
+    "rms_norm_eps": 1e-06,
+    "use_cache": true,
+    "tie_word_embeddings": false,
+    "rope_parameters": {
+      "rope_theta": 10000.0,
+      "rope_type": "default"
+    },
+    "attention_bias": false,
+    "use_sliding_window": false,
+    "sliding_window": null,
+    "max_window_layers": 28,
+    "layer_types": [
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention"
+    ],
+    "attention_dropout": 0.0,
+    "pad_token_id": null,
+    "bos_token_id": null,
+    "eos_token_id": null,
+    "_name_or_path": "",
+    "model_type": "qwen3",
+    "output_attentions": false
+  },
+  "batch_size": 2,
+  "seq_len": 1024,
+  "hardware": "1 x H100",
+  "step_scope": "forward_backward",
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.12.0+cu130",
+    "transformers": "5.9.0",
+    "cuda_available": true,
+    "cuda_device": "NVIDIA H100 80GB HBM3"
+  },
+  "predictions": [
+    {
+      "label": "roofline_fp16",
+      "wall_time_ms": 107.34046975103718,
+      "operators_traced": 5608,
+      "parameter_count": 8208535552,
+      "memory": {
+        "parameters_gb": 16.417071104,
+        "gradients_gb": 16.417071104,
+        "optimizer_states_gb": 0.0,
+        "total_model_state_gb": 32.834142208
+      }
+    },
+    {
+      "label": "roofline_fp8",
+      "wall_time_ms": 86.36097344653987,
+      "operators_traced": 5608,
+      "parameter_count": 8208535552,
+      "memory": {
+        "parameters_gb": 8.208535552,
+        "gradients_gb": 16.417071104,
+        "optimizer_states_gb": 0.0,
+        "total_model_state_gb": 24.625606656000002
+      }
+    }
+  ],
+  "notes": [
+    "FP8 roofline uses H100 FP8 tensor peak for GEMM/attention.",
+    "Gradients are counted as FP16 because typical FP8 training keeps higher-precision gradients."
+  ]
+}

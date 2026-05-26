@@ -1,4 +1,7 @@
 """Smoke tests for FP16/FP8/FP4 profiling kernels in compute_cost_profiler."""
+import importlib.util
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -6,6 +9,43 @@ from syssim.compute.compute_cost_profiler import (
     _profile_gemm,
     _profile_attention,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_tutorial_script(module_name: str, relative_path: str):
+    spec = importlib.util.spec_from_file_location(module_name, REPO_ROOT / relative_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_tutorial4_actual_measurement_defaults_to_three_measured_steps_after_warmup(monkeypatch):
+    module = _load_tutorial_script(
+        "low_precision_measure_actual_h100",
+        "docs/tutorials/scripts/low_precision_measure_actual_h100.py",
+    )
+
+    monkeypatch.setattr("sys.argv", ["low_precision_measure_actual_h100.py"])
+
+    args = module.parse_args()
+    assert args.warmups == 1
+    assert args.runs == 3
+
+
+def test_tutorial4_profile_model_defaults_to_one_run_reduced_smoke(monkeypatch):
+    module = _load_tutorial_script(
+        "low_precision_profile_model_h100",
+        "docs/tutorials/scripts/low_precision_profile_model_h100.py",
+    )
+
+    monkeypatch.setattr("sys.argv", ["low_precision_profile_model_h100.py"])
+
+    args = module.parse_args()
+    assert args.profile_scale == "reduced"
+    assert args.num_runs == 1
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

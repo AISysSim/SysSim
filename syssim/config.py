@@ -195,11 +195,11 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
     # Format: (pattern, hw_name, peak_mm_fp16, peak_math_fp16, peak_bw, peak_mm_fp8, peak_mm_fp4)
     hw_database = [
         # NVIDIA GH200 (Grace Hopper) - uses H100 GPU specs
-        ("gh200", "gh200", 989.0, 989.0, 3350.0, None, None),
-        ("grace hopper", "gh200", 989.0, 989.0, 3350.0, None, None),
+        ("gh200", "gh200", 989.0, 989.0, 3350.0, 1979.0, None),
+        ("grace hopper", "gh200", 989.0, 989.0, 3350.0, 1979.0, None),
 
         # NVIDIA H100
-        ("h100", "h100", 1979.0, 989.0, 3350.0, None, None),
+        ("h100", "h100", 1979.0, 989.0, 3350.0, 3958.0, None),
 
         # NVIDIA A100
         ("a100", "a100", 312.0, 156.0, 1935.0, None, None),

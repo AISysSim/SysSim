@@ -45,3 +45,17 @@ def test_hardware_info_falls_back_to_fp16_peak_when_unset():
     assert hw.get_peak_tflops_mm_for_dtype(torch.float8_e4m3fn) == 989.0
     assert hw.get_peak_tflops_mm_for_dtype("nvfp4") == 989.0
     assert hw.get_peak_tflops_mm_for_dtype(torch.float16) == 989.0
+
+
+def test_h100_style_hardware_info_has_fp8_peak():
+    hw = HardwareInfo(
+        peak_tflops_mm=1979.0,
+        peak_tflops_math=989.0,
+        peak_memory_bandwidth_gbps=3350.0,
+        peak_tflops_mm_fp8=3958.0,
+    )
+
+    assert hw.get_peak_tflops_mm_for_dtype(torch.float16) == 1979.0
+    assert hw.get_peak_tflops_mm_for_dtype(torch.bfloat16) == 1979.0
+    assert hw.get_peak_tflops_mm_for_dtype(torch.float8_e4m3fn) == 3958.0
+    assert hw.get_peak_tflops_mm_for_dtype(torch.float8_e5m2) == 3958.0

@@ -1,0 +1,231 @@
+{
+  "status": "ok",
+  "model": "Qwen/Qwen3.5-9B",
+  "model_scale": "full",
+  "model_config": {
+    "transformers_version": "5.9.0",
+    "architectures": null,
+    "output_hidden_states": false,
+    "return_dict": true,
+    "dtype": null,
+    "chunk_size_feed_forward": 0,
+    "is_encoder_decoder": false,
+    "id2label": {
+      "0": "LABEL_0",
+      "1": "LABEL_1"
+    },
+    "label2id": {
+      "LABEL_0": 0,
+      "LABEL_1": 1
+    },
+    "problem_type": null,
+    "vocab_size": 248320,
+    "hidden_size": 4096,
+    "intermediate_size": 12288,
+    "num_hidden_layers": 32,
+    "num_attention_heads": 16,
+    "num_key_value_heads": 4,
+    "head_dim": 256,
+    "hidden_act": "silu",
+    "max_position_embeddings": 262144,
+    "initializer_range": 0.02,
+    "rms_norm_eps": 1e-06,
+    "use_cache": true,
+    "tie_word_embeddings": false,
+    "rope_parameters": {
+      "rope_theta": 10000.0,
+      "rope_type": "default"
+    },
+    "attention_bias": false,
+    "use_sliding_window": false,
+    "sliding_window": null,
+    "max_window_layers": 28,
+    "layer_types": [
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention"
+    ],
+    "attention_dropout": 0.0,
+    "pad_token_id": null,
+    "bos_token_id": null,
+    "eos_token_id": null,
+    "_name_or_path": "",
+    "model_type": "qwen3",
+    "output_attentions": false
+  },
+  "batch_size": 2,
+  "seq_len": 1024,
+  "hardware": "NVIDIA H100 80GB HBM3",
+  "profile_scale": "reduced",
+  "num_runs": 1,
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.12.0+cu130",
+    "transformers": "5.9.0",
+    "pandas": "3.0.3",
+    "scikit_learn": "1.8.0",
+    "xgboost": "3.2.0",
+    "cuda_available": true,
+    "cuda_device": "NVIDIA H100 80GB HBM3"
+  },
+  "profiles": [
+    {
+      "operator": "gemm",
+      "csv_path": "data/profiling/gemm_h100_fp8_data.csv",
+      "rows": 12,
+      "valid_rows": 12,
+      "invalid_rows": 0,
+      "profile_grid": {
+        "scale": "reduced",
+        "gemm_configs": 12,
+        "attn_configs": 12
+      }
+    },
+    {
+      "operator": "attn",
+      "csv_path": "data/profiling/attn_h100_fp8_data.csv",
+      "rows": 12,
+      "valid_rows": 12,
+      "invalid_rows": 0,
+      "profile_grid": {
+        "scale": "reduced",
+        "gemm_configs": 12,
+        "attn_configs": 12
+      }
+    }
+  ],
+  "trained_models": [
+    {
+      "operator": "gemm",
+      "model_path": "data/trained_models/gemm_h100_fp8_xgb.pth",
+      "cv_metrics": {
+        "mean_val_rmse": 0.02472720918869522,
+        "std_val_rmse": 0.005226473540010767,
+        "mean_eff_mape": 63.785289848638875,
+        "std_eff_mape": 45.043990360108765,
+        "mean_n_trees": 432.6,
+        "fold_metrics": [
+          {
+            "fold": 1,
+            "val_rmse": 0.0252882549729561,
+            "eff_mape": 114.4286690772947,
+            "n_trees": 488
+          },
+          {
+            "fold": 2,
+            "val_rmse": 0.03442799226837039,
+            "eff_mape": 14.215288024981804,
+            "n_trees": 418
+          },
+          {
+            "fold": 3,
+            "val_rmse": 0.02311059745858395,
+            "eff_mape": 107.90687531113434,
+            "n_trees": 494
+          },
+          {
+            "fold": 4,
+            "val_rmse": 0.02144787442567902,
+            "eff_mape": 8.363566159421024,
+            "n_trees": 488
+          },
+          {
+            "fold": 5,
+            "val_rmse": 0.019361326817886625,
+            "eff_mape": 74.01205067036251,
+            "n_trees": 275
+          }
+        ]
+      },
+      "eff_mape": 63.28757240543514,
+      "time_mape": 19.133317760636217
+    },
+    {
+      "operator": "attn",
+      "model_path": "data/trained_models/attn_h100_fp8_xgb.pth",
+      "cv_metrics": {
+        "mean_val_rmse": 0.024275261954152947,
+        "std_val_rmse": 0.012414150651216668,
+        "mean_eff_mape": 148.59045651049794,
+        "std_eff_mape": 76.46161554390004,
+        "mean_n_trees": 110.6,
+        "fold_metrics": [
+          {
+            "fold": 1,
+            "val_rmse": 0.03668038201603838,
+            "eff_mape": 204.4220211243899,
+            "n_trees": 1
+          },
+          {
+            "fold": 2,
+            "val_rmse": 0.019202606459920484,
+            "eff_mape": 129.9100955195986,
+            "n_trees": 175
+          },
+          {
+            "fold": 3,
+            "val_rmse": 0.04125103653566693,
+            "eff_mape": 263.0308573139541,
+            "n_trees": 1
+          },
+          {
+            "fold": 4,
+            "val_rmse": 0.010208725514234669,
+            "eff_mape": 48.51337383698653,
+            "n_trees": 188
+          },
+          {
+            "fold": 5,
+            "val_rmse": 0.014033559244904268,
+            "eff_mape": 97.07593475756065,
+            "n_trees": 188
+          }
+        ]
+      },
+      "eff_mape": 140.21509003490172,
+      "time_mape": 52.86279542074772
+    }
+  ],
+  "predictions": [
+    {
+      "label": "profiling_model_fp8",
+      "wall_time_ms": 205.66250331376324,
+      "operators_traced": 5608,
+      "parameter_count": 8208535552
+    }
+  ],
+  "elapsed_s": 4.621442794799805,
+  "limitations": [
+    "The default profiling grid is a one-run reduced smoke workflow; use --profile-scale tutorial and increase --num-runs for calibration.",
+    "Only operators with at least 5 valid FP8 rows are trained because train_efficiency_model uses 5-fold CV."
+  ]
+}
