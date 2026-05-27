@@ -258,14 +258,17 @@ def test_derive_num_nodes_multi_node_requires_inter_node_bw():
 
 
 def test_top_level_exports_core():
-    """Core public surface: simulate, trace, Trace, model/parallelism/training/hardware configs."""
+    """Core public surface: simulate, Trace, model/parallelism/training/hardware configs.
+
+    `trace` is intentionally NOT public (internal building block)."""
     import syssim
     for name in (
-        "simulate", "trace", "Trace",
+        "simulate", "Trace",
         "HFModel", "CustomModel", "SimulationReport",
         "ModelConfig", "ParallelismConfig", "TrainingConfig", "HardwareConfig",
     ):
         assert hasattr(syssim, name), name
+    assert not hasattr(syssim, "trace"), "trace must not be public"
 
 
 def test_top_level_exports_estimate_and_sweep():

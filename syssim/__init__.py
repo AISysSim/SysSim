@@ -4,7 +4,7 @@ from .api import set_efficiency_model_dir
 
 # High-level training simulator (syssim.training)
 from .training import (
-    simulate, trace, estimate_memory, sweep, Trace,
+    simulate, estimate_memory, sweep, Trace,
     HFModel, CustomModel, SimulationReport,
     ModelConfig, ParallelismConfig, TrainingConfig, HardwareConfig,
 )
