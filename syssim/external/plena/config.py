@@ -9,10 +9,6 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ...config import HardwareInfo
 
 
 @dataclass
@@ -86,25 +82,6 @@ class PLENAConfig:
             isa_lib_path=str(isa_lib_path),
             frequency_hz=frequency_hz,
         )
-
-
-def is_plena_hardware(hw_info: "HardwareInfo") -> bool:
-    """Check if hw_info represents a PLENA accelerator.
-
-    Currently SysSim HardwareInfo is GPU-focused. This function returns False
-    for all GPU hardware. In the future, a PLENAHardwareInfo subclass could
-    be added for PLENA-specific hardware parameters.
-
-    Args:
-        hw_info: HardwareInfo instance to check
-
-    Returns:
-        True if hw_info is a PLENA hardware configuration, False otherwise
-    """
-    # Import here to avoid circular imports
-    from .compute.plena_backend import PLENAHardwareInfo
-
-    return isinstance(hw_info, PLENAHardwareInfo)
 
 
 def get_plena_perf_model(config: PLENAConfig):
