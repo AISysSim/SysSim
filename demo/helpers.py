@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import random
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -132,9 +133,6 @@ class ConstantEstimator:
         execution_mode=None, cache_seq_len: int = 0,
     ) -> float:
         return self.constant_ms
-
-
-from contextlib import contextmanager
 
 
 @contextmanager

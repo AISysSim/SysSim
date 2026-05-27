@@ -9,6 +9,11 @@ Run in Colab:  !pytest demo/smoke_test.py -v
 
 from __future__ import annotations
 
+import csv
+import os
+import tempfile
+from pathlib import Path
+
 import pytest
 
 import demo.helpers as helpers
@@ -17,8 +22,6 @@ import demo.helpers as helpers
 def test_helpers_importable():
     assert helpers.helpers_loaded() == "ok"
 
-
-from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LLAMA_YAML = REPO_ROOT / "demo" / "configs" / "models" / "llama3-8b.yaml"
@@ -49,11 +52,6 @@ def test_mi300x_yaml_loads():
     assert hw.peak_memory_bandwidth_GBps == 5300   # HBM3 bandwidth
     assert hw.gpu_memory_GB == 192
     assert hw.gpus_per_node == 8
-
-
-import csv
-import os
-import tempfile
 
 
 def _read_csv(path):
