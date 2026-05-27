@@ -1,0 +1,15 @@
+peak_tflops_mm: 1979
+peak_tflops_math: 989
+peak_memory_bandwidth_GBps: 3350
+peak_tflops_mm_fp8: 3958
+
+gpus_per_node: 2
+gpu_memory_GB: 80
+inter_node_bandwidth_GBps: 200
+inter_node_latency_us: 5
+
+topology:
+  type: simple
+  num_nodes: 1
+  intra_node_bandwidth_GBps: 900
+  inter_node_bandwidth_GBps: 200

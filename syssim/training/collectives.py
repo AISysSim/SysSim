@@ -1,0 +1,77 @@
+"""Inject derived operators (DP gradient all-reduce, optimizer step) into a traced graph."""
+
+from __future__ import annotations
+
+from ..operator_graph import OperatorGraph, OperatorNode, OperatorType
+
+
+def inject_dp_gradient_allreduce(
+    graph: OperatorGraph,
+    total_grad_bytes: int,
+    dp_ranks: list[int],
+    last_backward_op_name: str,
+    estimated_time_ms: float,
+) -> None:
+    if len(dp_ranks) <= 1:
+        return
+    idx = len(graph.operators)
+    graph.add_operator(OperatorNode(
+        name=f"dp_allreduce_{idx}",
+        op_type=OperatorType.COLLECTIVE,
+        config={
+            "collective": "all_reduce",
+            "bytes": int(total_grad_bytes),
+            "group_ranks": list(dp_ranks),
+            "phase": "backward",
+        },
+        predecessors=[last_backward_op_name],
+        stream_id=1,
+        estimated_time_ms=estimated_time_ms,
+    ))
+
+
+def inject_optimizer_step(
+    graph: OperatorGraph,
+    param_bytes_per_rank: int,
+    peak_memory_bandwidth_GBps: float,
+    last_op_name: str,
+) -> None:
+    """Inject one MATH op modeling Adam's memory-bound parameter update.
+
+    Adam mixed-precision moves ~5 × param_bytes per step:
+    read params/grad/m/v, write params/m/v.
+    """
+    bytes_moved = 5 * int(param_bytes_per_rank)
+    time_ms = bytes_moved / (peak_memory_bandwidth_GBps * 1e9) * 1000.0 \
+              if peak_memory_bandwidth_GBps > 0 else 0.0
+    idx = len(graph.operators)
+    graph.add_operator(OperatorNode(
+        name=f"optimizer_step_{idx}",
+        op_type=OperatorType.MATH,
+        config={"phase": "optimizer", "bytes_moved": bytes_moved},
+        predecessors=[last_op_name],
+        stream_id=0,
+        estimated_time_ms=time_ms,
+    ))
+
+
+def last_backward_op_per_pp_stage(graph: "OperatorGraph") -> dict[int, str]:
+    """Return mapping pp_rank -> name of the latest backward-ish op on that stage.
+
+    Heuristic: any op carrying config["pp_rank"] is associated with that stage.
+    Within a stage, the last op (highest insertion order) on stream 0 (compute)
+    is the last backward op.
+
+    NOTE: the stream offset per stage is pp_rank * 1000, mirroring _STREAM_STRIDE
+    in pipeline.py. Hardcoded here to avoid a circular import.
+    """
+    per_stage_last: dict[int, str] = {}
+    for op in graph.operators.values():
+        pp_rank = op.config.get("pp_rank")
+        if pp_rank is None:
+            continue
+        # Compute stream for this stage is pp_rank * 1000 + 0
+        if (op.stream_id - pp_rank * 1000) != 0:
+            continue
+        per_stage_last[pp_rank] = op.name
+    return per_stage_last

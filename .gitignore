@@ -73,3 +73,6 @@ data/trained_models/*.csv
 core
 
 PROGRESS.md
+
+# Agent artifacts (per CLAUDE.md)
+agent_space/

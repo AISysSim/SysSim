@@ -66,9 +66,8 @@ class OperatorNode:
     # Configuration
     config: dict[str, Any] = field(default_factory=dict)
 
-    # Dependencies
-    data_deps: list[str] = field(default_factory=list)
-    stream_deps: list[str] = field(default_factory=list)
+    # Single dependency list — same-stream FIFO and cross-stream sync both here
+    predecessors: list[str] = field(default_factory=list)
 
     # Execution context
     stream_id: int = 0
@@ -81,24 +80,17 @@ class OperatorNode:
     # Performance
     estimated_time_ms: float = 0.0
 
-    # Critical path state (computed by OperatorGraph.compute_critical_path)
-    earliest_start: float = 0.0
-    earliest_finish: float = 0.0
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "op_type": self.op_type.value,
             "config": self.config,
-            "data_deps": self.data_deps,
-            "stream_deps": self.stream_deps,
+            "predecessors": self.predecessors,
             "stream_id": self.stream_id,
             "device_id": self.device_id,
             "inputs": [t.to_dict() for t in self.inputs],
             "outputs": [t.to_dict() for t in self.outputs],
             "estimated_time_ms": self.estimated_time_ms,
-            "earliest_start": self.earliest_start,
-            "earliest_finish": self.earliest_finish,
         }
 
 
@@ -124,7 +116,7 @@ class OperatorGraph:
     def validate(self) -> None:
         """Validate DAG: reference integrity and cycle detection (DFS coloring)."""
         for name, op in self.operators.items():
-            for dep in op.data_deps + op.stream_deps:
+            for dep in op.predecessors:
                 if dep not in self.operators:
                     raise ValueError(
                         f"Operator '{name}' depends on non-existent operator '{dep}'"
@@ -137,7 +129,7 @@ class OperatorGraph:
         def dfs(u: str) -> None:
             color[u] = GRAY
             node = self.operators[u]
-            for v in node.data_deps + node.stream_deps:
+            for v in node.predecessors:
                 if color[v] == GRAY:
                     raise ValueError(f"Cycle detected involving operator '{v}'")
                 if color[v] == WHITE:
@@ -153,30 +145,17 @@ class OperatorGraph:
         if self._topo_cache is not None:
             return self._topo_cache
 
-        in_degree: dict[str, int] = {name: 0 for name in self.operators}
-        for op in self.operators.values():
-            for dep in op.data_deps + op.stream_deps:
-                pass  # deps are predecessors, not successors
-        # Build successor list and in-degree
-        successors: dict[str, list[str]] = {name: [] for name in self.operators}
-        for name, op in self.operators.items():
-            for dep in op.data_deps + op.stream_deps:
-                if dep not in successors:
-                    continue
-                in_degree[name] += 1
-            # dep -> name means dep is predecessor of name
-
         # Re-compute: for each edge dep -> name, dep is a predecessor
         in_degree = {name: 0 for name in self.operators}
         for name, op in self.operators.items():
-            # Each dep in data_deps/stream_deps is a predecessor of 'name'
+            # Each dep in predecessors is a predecessor of 'name'
             # So 'name' has an incoming edge from each dep
-            in_degree[name] = len(set(op.data_deps + op.stream_deps))
+            in_degree[name] = len(set(op.predecessors))
 
         # Successors: if name depends on dep, then dep has name as successor
         successors = {name: [] for name in self.operators}
         for name, op in self.operators.items():
-            for dep in set(op.data_deps + op.stream_deps):
+            for dep in set(op.predecessors):
                 if dep in successors:
                     successors[dep].append(name)
 
@@ -196,40 +175,6 @@ class OperatorGraph:
         self._topo_cache = result
         return result
 
-    def compute_critical_path(self) -> float:
-        """DP on topological order with multi-stream awareness.
-
-        Returns the critical path length (max earliest_finish across all operators).
-        """
-        if not self.operators:
-            return 0.0
-
-        topo = self.topological_sort()
-        stream_times: dict[int, float] = {s: 0.0 for s in self.streams}
-
-        for name in topo:
-            op = self.operators[name]
-            start = stream_times.get(op.stream_id, 0.0)
-
-            # Data and stream dependencies
-            for dep_name in op.data_deps + op.stream_deps:
-                dep = self.operators[dep_name]
-                start = max(start, dep.earliest_finish)
-
-            # Special sync semantics
-            if op.op_type == OperatorType.BARRIER:
-                start = max(start, max(stream_times.values()) if stream_times else 0.0)
-            elif op.op_type == OperatorType.STREAM_SYNC:
-                target_stream = op.config.get("target_stream")
-                if target_stream is not None and target_stream in stream_times:
-                    start = max(start, stream_times[target_stream])
-
-            op.earliest_start = start
-            op.earliest_finish = start + op.estimated_time_ms
-            stream_times[op.stream_id] = op.earliest_finish
-
-        return max(op.earliest_finish for op in self.operators.values())
-
     def to_dot(self) -> str:
         """Generate Graphviz DOT representation, color-coded by op type."""
         color_map = {
@@ -247,10 +192,12 @@ class OperatorGraph:
                 f'  "{name}" [label="{label}", style=filled, fillcolor="{color}"];'
             )
         for name, op in self.operators.items():
-            for dep in op.data_deps:
-                lines.append(f'  "{dep}" -> "{name}" [style=solid];')
-            for dep in op.stream_deps:
-                lines.append(f'  "{dep}" -> "{name}" [style=dashed];')
+            for dep_name in op.predecessors:
+                dep = self.operators.get(dep_name)
+                if dep is None:
+                    continue
+                style = "solid" if dep.stream_id == op.stream_id else "dashed"
+                lines.append(f'  "{dep_name}" -> "{name}" [style={style}];')
         lines.append("}")
         return "\n".join(lines)
 
@@ -263,22 +210,16 @@ class OperatorGraph:
         return json.dumps(data, indent=2)
 
     def summary(self) -> str:
-        """Return a human-readable summary of op counts, critical path, and total time."""
+        """Return a human-readable summary of op counts and total time."""
         counts: dict[str, int] = {}
         total_time = 0.0
         for op in self.operators.values():
             key = op.op_type.value
             counts[key] = counts.get(key, 0) + 1
             total_time += op.estimated_time_ms
-
-        critical_path = self.compute_critical_path()
-
         lines = [f"OperatorGraph '{self.name}': {len(self.operators)} operators, {len(self.streams)} streams"]
         lines.append("Op counts:")
         for k in sorted(counts):
             lines.append(f"  {k}: {counts[k]}")
         lines.append(f"Total estimated time: {total_time:.6e} ms")
-        lines.append(f"Critical path time:   {critical_path:.6e} ms")
-        if total_time > 0:
-            lines.append(f"Parallelism:          {total_time / critical_path:.2f}x")
         return "\n".join(lines)

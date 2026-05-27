@@ -1,0 +1,265 @@
+"""Analytical per-rank memory accounting.
+
+Megatron-style sharding assumed:
+  - TP shards attention + FFN weight matrices.
+  - Norms, embeddings, lm_head are NOT TP-sharded (replicated across TP group).
+  - DP / CP replicate; ZeRO is out of scope for v1.
+  - Sequence-parallel + context-parallel reduce activation memory by the
+    corresponding factors.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+from .spec import ModelConfig, ParallelismConfig, TrainingConfig
+
+
+def _attn_param_count(m: ModelConfig) -> int:
+    """Count attention layer parameters (QKV + output projection)."""
+    h = m.hidden_size
+    head_dim = h // m.num_attention_heads
+    q_params = h * (m.num_attention_heads * head_dim)
+    kv_params = 2 * h * (m.num_query_groups * head_dim)
+    o_params = (m.num_attention_heads * head_dim) * h
+    return q_params + kv_params + o_params
+
+
+def _ffn_param_count(m: ModelConfig) -> int:
+    """Count FFN parameters (SwiGLU has 3 matrices, standard has 2)."""
+    h, f = m.hidden_size, m.ffn_hidden_size
+    return 3 * h * f if m.swiglu else 2 * h * f
+
+
+def _norm_param_count(m: ModelConfig) -> int:
+    """Count RMSNorm parameters (pre-attention + pre-FFN per layer)."""
+    return 2 * m.hidden_size
+
+
+def count_parameters(m: ModelConfig) -> int:
+    """Count total trainable parameters for a decoder-only LM.
+
+    Includes:
+      - Per-layer: attention (QKV + output), FFN, norms
+      - Embeddings: embedding matrix (tied with lm_head if enabled)
+      - Final norm: single RMSNorm after all layers
+      - LM head: separate only if not tied to embeddings
+
+    Args:
+        m: ModelConfig with all Megatron fields populated.
+
+    Returns:
+        Total parameter count.
+    """
+    per_layer = _attn_param_count(m) + _ffn_param_count(m) + _norm_param_count(m)
+    embed = m.vocab_size * m.hidden_size
+    final_norm = m.hidden_size
+    lm_head = 0 if m.tie_word_embeddings else m.vocab_size * m.hidden_size
+    return per_layer * m.num_layers + embed + final_norm + lm_head
+
+
+def _weight_dtype_bytes(tr: TrainingConfig) -> int:
+    if tr.fp8:
+        return 1
+    if tr.bf16 or tr.fp16:
+        return 2
+    return 4
+
+
+def param_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Per-rank weight memory in bytes (accounting for TP sharding).
+
+    Sharded parameters (attention + FFN per layer) are divided by TP group size.
+    Replicated parameters (norms, embeddings, lm_head) are kept on all ranks.
+
+    Args:
+        m: ModelConfig.
+        p: ParallelismConfig.
+        tr: TrainingConfig (for dtype).
+
+    Returns:
+        Bytes per rank for weights.
+    """
+    tp = p.tensor_model_parallel_size
+    sharded = (_attn_param_count(m) + _ffn_param_count(m)) * m.num_layers
+    embed = m.vocab_size * m.hidden_size
+    final_norm = m.hidden_size
+    lm_head = 0 if m.tie_word_embeddings else m.vocab_size * m.hidden_size
+    norms = _norm_param_count(m) * m.num_layers
+    replicated = embed + final_norm + lm_head + norms
+    elements = sharded // tp + replicated
+    return elements * _weight_dtype_bytes(tr)
+
+
+def grad_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Per-rank gradient memory in bytes.
+
+    Gradients have the same shape as their corresponding parameters.
+
+    Args:
+        m: ModelConfig.
+        p: ParallelismConfig.
+        tr: TrainingConfig (for dtype).
+
+    Returns:
+        Bytes per rank for gradients.
+    """
+    return param_bytes_per_rank(m, p, tr)
+
+
+def optimizer_state_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Per-rank Adam optimizer state in bytes (mixed precision, no ZeRO).
+
+    Adam maintains fp32 master weights + momentum (m) + variance (v).
+    12 bytes per parameter: 4 (master) + 4 (m) + 4 (v).
+    ZeRO sharding is out of scope for v1.
+
+    Args:
+        m: ModelConfig.
+        p: ParallelismConfig.
+        tr: TrainingConfig (unused but part of signature).
+
+    Returns:
+        Bytes per rank for optimizer state.
+    """
+    tp = p.tensor_model_parallel_size
+    sharded_elems = (_attn_param_count(m) + _ffn_param_count(m)) * m.num_layers // tp
+    embed = m.vocab_size * m.hidden_size
+    final_norm = m.hidden_size
+    lm_head = 0 if m.tie_word_embeddings else m.vocab_size * m.hidden_size
+    norms = _norm_param_count(m) * m.num_layers
+    replicated_elems = embed + final_norm + lm_head + norms
+    return (sharded_elems + replicated_elems) * 12
+
+
+@dataclass
+class MemoryBreakdown:
+    param_bytes: int
+    grad_bytes: int
+    optimizer_state_bytes: int
+    activation_bytes: int
+    pp_stage_memory_gb: Optional[list[float]] = None
+
+    @property
+    def peak_bytes(self) -> int:
+        return self.param_bytes + self.grad_bytes + self.optimizer_state_bytes + self.activation_bytes
+
+    @property
+    def peak_gb(self) -> float:
+        if self.pp_stage_memory_gb:
+            return max(self.pp_stage_memory_gb)
+        return self.peak_bytes / 1e9
+
+
+def activation_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Sum of dominant per-layer activations (norms + QKV + attn scores + FFN gate/up)."""
+    b = tr.micro_batch_size
+    s = m.seq_length
+    h = m.hidden_size
+    elem = _weight_dtype_bytes(tr)
+    a_h = m.num_attention_heads
+
+    per_layer_full = (
+        6 * b * s * h                      # norms + Q/K/V + attn-out
+        + b * a_h * s * s                  # softmax(QK^T)
+        + 2 * b * s * m.ffn_hidden_size   # SwiGLU gate + up
+    ) * elem
+    per_layer_selective = (
+        6 * b * s * h
+        + 2 * b * s * m.ffn_hidden_size
+    ) * elem
+
+    if tr.recompute_granularity == "full":
+        total = per_layer_full           # only one layer alive at a time
+    elif tr.recompute_granularity == "selective":
+        total = per_layer_selective * m.num_layers
+    else:
+        total = per_layer_full * m.num_layers
+
+    sp_div = p.tensor_model_parallel_size if p.sequence_parallel else 1
+    cp_div = p.context_parallel_size
+    return total // (sp_div * cp_div)
+
+
+def peak_memory_gb_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> MemoryBreakdown:
+    return MemoryBreakdown(
+        param_bytes           = param_bytes_per_rank(m, p, tr),
+        grad_bytes            = grad_bytes_per_rank(m, p, tr),
+        optimizer_state_bytes = optimizer_state_bytes_per_rank(m, p, tr),
+        activation_bytes      = activation_bytes_per_rank(m, p, tr),
+    )
+
+
+def _layers_per_stage(num_layers: int, pp_size: int) -> list[int]:
+    """Megatron's default even split: first `num_layers % pp_size` stages get one extra layer."""
+    base, rem = divmod(num_layers, pp_size)
+    return [base + (1 if i < rem else 0) for i in range(pp_size)]
+
+
+def per_pp_stage_peak_memory_gb(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> list[float]:
+    """Per-PP-stage peak memory (GB), one entry per pipeline stage.
+
+    First stage owns the embedding; last stage owns the final norm + lm_head
+    (when not tied); middle stages own only their transformer layers. Activations,
+    grads, and optimizer state scale with the per-stage layer count.
+    """
+    pp = p.pipeline_model_parallel_size
+    if pp == 1:
+        return [peak_memory_gb_per_rank(m, p, tr).peak_gb]
+
+    tp = p.tensor_model_parallel_size
+    elem = _weight_dtype_bytes(tr)
+    layers_per_stage = _layers_per_stage(m.num_layers, pp)
+
+    embed_params = m.vocab_size * m.hidden_size
+    final_norm_params = m.hidden_size
+    lm_head_params = 0 if m.tie_word_embeddings else m.vocab_size * m.hidden_size
+    norm_per_layer = _norm_param_count(m)
+    sharded_per_layer = (_attn_param_count(m) + _ffn_param_count(m)) // tp
+
+    out: list[float] = []
+    for stage_idx, layers in enumerate(layers_per_stage):
+        per_stage = ModelConfig(
+            num_layers=layers,
+            hidden_size=m.hidden_size,
+            num_attention_heads=m.num_attention_heads,
+            num_query_groups=m.num_query_groups,
+            ffn_hidden_size=m.ffn_hidden_size,
+            seq_length=m.seq_length,
+            max_position_embeddings=m.max_position_embeddings,
+            vocab_size=m.vocab_size,
+            swiglu=m.swiglu, rope=m.rope, rope_theta=m.rope_theta,
+            tie_word_embeddings=m.tie_word_embeddings,
+            rms_norm_eps=m.rms_norm_eps,
+        )
+
+        # Stage-local transformer layers
+        sharded_elems = sharded_per_layer * layers
+        replicated_elems = norm_per_layer * layers
+        # First stage: embedding (replicated, not TP-sharded)
+        if stage_idx == 0:
+            replicated_elems += embed_params
+        # Last stage: final norm + lm_head
+        if stage_idx == pp - 1:
+            replicated_elems += final_norm_params + lm_head_params
+
+        param_b = (sharded_elems + replicated_elems) * elem
+        grad_b = param_b
+        opt_b = (sharded_elems + replicated_elems) * 12
+        act_b = activation_bytes_per_rank(per_stage, p, tr)
+
+        out.append((param_b + grad_b + opt_b + act_b) / 1e9)
+    return out

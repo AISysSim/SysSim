@@ -1,4 +1,4 @@
-"""Unit tests for rlsysim tracing."""
+"""Unit tests for syssim tracing."""
 
 import json
 
@@ -8,8 +8,6 @@ import torch.nn.functional as F
 import pytest
 
 from syssim import (
-    trace_model_for_training,
-    trace_model_for_inference,
     ExecutionMode,
     HardwareInfo,
     SimulatorConfig,
@@ -17,10 +15,11 @@ from syssim import (
     OperatorNode,
     OperatorGraph,
 )
+from syssim.tracer import OperatorGraphTracer
 
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
-    reason="rlsysim tracing requires CUDA",
+    reason="syssim tracing requires CUDA",
 )
 
 
@@ -40,14 +39,80 @@ def config(hw):
     return SimulatorConfig(hw_info=hw)
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def _make_legacy_fwd_bwd(forward_only: bool):
+    """Return a Megatron-shaped forward_backward_func."""
+    def forward_backward_func(
+        *, forward_step_func, data_iterator, model,
+        num_microbatches, seq_length, micro_batch_size, forward_only,
+    ):
+        for _ in range(num_microbatches):
+            loss, _ = forward_step_func(data_iterator, model)
+            if not forward_only:
+                loss.backward()
+    return forward_backward_func
+
+
+def _make_fwd_step(inputs, loss_fn=None):
+    """Return a forward_step_func that feeds *inputs* to the model."""
+    def forward_step(it, m):
+        batch = next(it)
+        if isinstance(batch, tuple):
+            out = m(*batch)
+        else:
+            out = m(batch)
+        loss = loss_fn(out) if loss_fn else out.sum()
+        return loss, {}
+    return forward_step
+
+
+def _data_iter(inputs):
+    """Infinite iterator that always yields *inputs*."""
+    while True:
+        yield inputs
+
+
+def _trace(model, inputs, config, *, forward_only=True, loss_fn=None, cache_seq_len=0):
+    """Convenience wrapper around OperatorGraphTracer.trace()."""
+    mode = ExecutionMode.PREFILL if forward_only else ExecutionMode.TRAINING
+    tracer = OperatorGraphTracer(
+        hw_info=config.hw_info,
+        execution_mode=mode,
+        cache_seq_len=cache_seq_len,
+    )
+    return tracer.trace(
+        model=model,
+        forward_backward_func=_make_legacy_fwd_bwd(forward_only),
+        forward_step_func=_make_fwd_step(inputs, loss_fn=loss_fn),
+        data_iterator=_data_iter(inputs),
+        num_microbatches=1,
+        seq_length=0,
+        micro_batch_size=0,
+        forward_only=forward_only,
+    )
+
+
 # ── CUDA requirement ──────────────────────────────────────────────────────
 
 def test_tracing_raises_without_cuda(config):
-    """Tracing should raise RuntimeError when inputs are non-CUDA."""
+    """Tracing should raise RuntimeError when CUDA is not available."""
+    if torch.cuda.is_available():
+        pytest.skip("CUDA is available; cannot test the no-CUDA error path")
     model = nn.Linear(8, 4)
-    cpu_input = torch.randn(2, 8)  # CPU tensor
+    cpu_input = torch.randn(2, 8)
+    tracer = OperatorGraphTracer(hw_info=config.hw_info, execution_mode=ExecutionMode.PREFILL)
     with pytest.raises(RuntimeError, match="CUDA"):
-        trace_model_for_inference(model, cpu_input, config)
+        tracer.trace(
+            model=model,
+            forward_backward_func=_make_legacy_fwd_bwd(forward_only=True),
+            forward_step_func=_make_fwd_step(cpu_input),
+            data_iterator=_data_iter(cpu_input),
+            num_microbatches=1,
+            seq_length=0,
+            micro_batch_size=0,
+            forward_only=True,
+        )
 
 
 # ── Basic tracing ─────────────────────────────────────────────────────────
@@ -58,18 +123,18 @@ class TestTraceLinear:
 
     def test_produces_operators(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         assert len(graph) > 0
 
     def test_contains_gemm(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         types = {op.op_type for op in graph.operators.values()}
         assert OperatorType.GEMM in types
 
     def test_single_stream(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         assert graph.streams == {0}
 
 
@@ -79,27 +144,25 @@ class TestTraceSequential:
 
     def test_operator_count(self, config):
         model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
-        graph = trace_model_for_inference(model, torch.randn(4, 32).cuda(), config)
+        graph = _trace(model, torch.randn(4, 32).cuda(), config)
         # Expect at least: addmm, relu, addmm
         assert len(graph) >= 3
 
     def test_op_type_counts(self, config):
         model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
-        graph = trace_model_for_inference(model, torch.randn(4, 32).cuda(), config)
+        graph = _trace(model, torch.randn(4, 32).cuda(), config)
         types = [op.op_type for op in graph.operators.values()]
         assert types.count(OperatorType.GEMM) == 2
         assert types.count(OperatorType.MATH) >= 1  # ReLU
 
     def test_data_dependencies(self, config):
         model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
-        graph = trace_model_for_inference(model, torch.randn(4, 32).cuda(), config)
-        # Every non-first operator should have at least one dependency
+        graph = _trace(model, torch.randn(4, 32).cuda(), config)
+        # Every non-first operator should have at least one predecessor
         topo = graph.topological_sort()
         for name in topo[1:]:
             op = graph.operators[name]
-            assert len(op.data_deps) + len(op.stream_deps) > 0, (
-                f"{name} has no dependencies"
-            )
+            assert len(op.predecessors) > 0, f"{name} has no predecessors"
 
 
 # ── Time estimation ──────────────────────────────────────────────────────
@@ -110,7 +173,7 @@ class TestTimeEstimation:
 
     def test_gemm_has_nonzero_time(self, config):
         model = nn.Linear(128, 64)
-        graph = trace_model_for_inference(model, torch.randn(32, 128).cuda(), config)
+        graph = _trace(model, torch.randn(32, 128).cuda(), config)
         gemm_ops = [
             op for op in graph.operators.values()
             if op.op_type == OperatorType.GEMM
@@ -128,7 +191,7 @@ class TestGEMMConfig:
 
     def test_gemm_has_mnk(self, config):
         model = nn.Linear(64, 32)
-        graph = trace_model_for_inference(model, torch.randn(16, 64).cuda(), config)
+        graph = _trace(model, torch.randn(16, 64).cuda(), config)
         gemm_ops = [
             op for op in graph.operators.values()
             if op.op_type == OperatorType.GEMM
@@ -141,7 +204,7 @@ class TestGEMMConfig:
 
     def test_gemm_shapes_match(self, config):
         model = nn.Linear(64, 32)
-        graph = trace_model_for_inference(model, torch.randn(16, 64).cuda(), config)
+        graph = _trace(model, torch.randn(16, 64).cuda(), config)
         gemm_ops = [
             op for op in graph.operators.values()
             if op.op_type == OperatorType.GEMM
@@ -160,7 +223,7 @@ class TestTensorMetadata:
 
     def test_outputs_recorded(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         gemm_ops = [
             op for op in graph.operators.values()
             if op.op_type == OperatorType.GEMM
@@ -172,43 +235,12 @@ class TestTensorMetadata:
 
     def test_inputs_recorded(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         gemm_ops = [
             op for op in graph.operators.values()
             if op.op_type == OperatorType.GEMM
         ]
         assert len(gemm_ops[0].inputs) > 0
-
-
-# ── Critical path ────────────────────────────────────────────────────────
-
-@requires_cuda
-class TestCriticalPath:
-    """Critical path computation on traced graphs."""
-
-    def test_returns_positive(self, config):
-        model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
-        graph = trace_model_for_inference(model, torch.randn(4, 32).cuda(), config)
-        cp = graph.compute_critical_path()
-        assert cp > 0.0
-
-    def test_equals_total_on_single_stream(self, config):
-        model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
-        graph = trace_model_for_inference(model, torch.randn(4, 32).cuda(), config)
-        cp = graph.compute_critical_path()
-        total = sum(op.estimated_time_ms for op in graph.operators.values())
-        assert cp == pytest.approx(total)
-
-    def test_empty_graph(self):
-        graph = OperatorGraph("empty")
-        assert graph.compute_critical_path() == 0.0
-
-    def test_earliest_start_finish_set(self, config):
-        model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
-        graph.compute_critical_path()
-        for op in graph.operators.values():
-            assert op.earliest_finish >= op.earliest_start
 
 
 # ── Export formats ────────────────────────────────────────────────────────
@@ -219,14 +251,14 @@ class TestExports:
 
     def test_to_dot(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         dot = graph.to_dot()
         assert "digraph" in dot
         assert "ms" in dot
 
     def test_to_json(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         data = json.loads(graph.to_json())
         assert "operators" in data
         assert len(data["operators"]) > 0
@@ -234,69 +266,64 @@ class TestExports:
 
     def test_summary(self, config):
         model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
-        graph = trace_model_for_inference(model, torch.randn(4, 32).cuda(), config)
+        graph = _trace(model, torch.randn(4, 32).cuda(), config)
         s = graph.summary()
         assert "gemm: 2" in s
         assert "ms" in s
-        assert "Parallelism" in s
 
 
-# ── trace_model_for_training ─────────────────────────────────────────────
+# ── Training (forward + backward) ─────────────────────────────────────────
 
 @requires_cuda
 class TestTraceForTraining:
-    """trace_model_for_training always traces forward + backward."""
+    """Tracing with forward_only=False captures forward + backward."""
 
     def test_more_ops_than_forward_only(self, config):
         model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
         inp = torch.randn(4, 32).cuda()
-        graph_fwd = trace_model_for_inference(model, inp, config, mode="prefill")
-        graph_train = trace_model_for_training(model, inp, config)
+        graph_fwd = _trace(model, inp, config, forward_only=True)
+        graph_train = _trace(model, inp, config, forward_only=False)
         assert len(graph_train) > len(graph_fwd)
 
     def test_custom_loss_fn(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_training(
+        graph = _trace(
             model,
             torch.randn(4, 16).cuda(),
             config,
+            forward_only=False,
             loss_fn=lambda out: out.mean(),
         )
         assert len(graph) > 0
 
     def test_produces_operators(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_training(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config, forward_only=False)
         assert len(graph) > 0
 
 
-# ── trace_model_for_inference (prefill) ──────────────────────────────────
+# ── Inference (prefill, forward-only) ────────────────────────────────────
 
 @requires_cuda
 class TestTraceForInference:
-    """trace_model_for_inference in prefill mode."""
+    """Tracing with forward_only=True (prefill mode)."""
 
     def test_produces_operators(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config, forward_only=True)
         assert len(graph) > 0
 
     def test_forward_only(self, config):
         model = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 8))
         inp = torch.randn(4, 32).cuda()
-        graph_prefill = trace_model_for_inference(model, inp, config, mode="prefill")
-        graph_train = trace_model_for_training(model, inp, config)
+        graph_prefill = _trace(model, inp, config, forward_only=True)
+        graph_train = _trace(model, inp, config, forward_only=False)
         # Training includes backward, so should have more ops
         assert len(graph_train) > len(graph_prefill)
 
-    def test_invalid_mode_raises(self, config):
-        model = nn.Linear(8, 4)
-        with pytest.raises(ValueError, match="Invalid inference mode"):
-            trace_model_for_inference(model, torch.randn(2, 8).cuda(), config, mode="bogus")
-
     def test_contains_gemm(self, config):
         model = nn.Linear(16, 8)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config, forward_only=True)
         types = {op.op_type for op in graph.operators.values()}
         assert OperatorType.GEMM in types
 
@@ -406,20 +433,20 @@ class TestOperatorTypeGEMM:
 
     def test_linear_produces_gemm(self, config):
         model = nn.Linear(32, 16)
-        graph = trace_model_for_inference(model, torch.randn(4, 32).cuda(), config)
+        graph = _trace(model, torch.randn(4, 32).cuda(), config)
         gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         assert len(gemm_ops) >= 1
 
     def test_gemm_has_positive_time(self, config):
         model = nn.Linear(128, 64)
-        graph = trace_model_for_inference(model, torch.randn(32, 128).cuda(), config)
+        graph = _trace(model, torch.randn(32, 128).cuda(), config)
         gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         for op in gemm_ops:
             assert op.estimated_time_ms > 0.0
 
     def test_gemm_config_has_mnk(self, config):
         model = nn.Linear(64, 32)
-        graph = trace_model_for_inference(model, torch.randn(8, 64).cuda(), config)
+        graph = _trace(model, torch.randn(8, 64).cuda(), config)
         gemm_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.GEMM]
         cfg = gemm_ops[0].config
         assert cfg["M"] == 8
@@ -439,7 +466,7 @@ class TestOperatorTypeATTENTION:
 
         model = SDPAModel()
         q = k = v = torch.randn(2, 4, 8, 32).cuda()
-        graph = trace_model_for_inference(model, (q, k, v), config)
+        graph = _trace(model, (q, k, v), config)
         attn_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.ATTN]
         assert len(attn_ops) >= 1
 
@@ -450,7 +477,7 @@ class TestOperatorTypeATTENTION:
 
         model = SDPAModel()
         q = k = v = torch.randn(2, 4, 16, 64).cuda()
-        graph = trace_model_for_inference(model, (q, k, v), config)
+        graph = _trace(model, (q, k, v), config)
         attn_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.ATTN]
         assert len(attn_ops) >= 1
         for op in attn_ops:
@@ -463,7 +490,7 @@ class TestOperatorTypeATTENTION:
 
         model = SDPAModel()
         q = k = v = torch.randn(2, 4, 8, 32).cuda()
-        graph = trace_model_for_inference(model, (q, k, v), config)
+        graph = _trace(model, (q, k, v), config)
         attn_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.ATTN]
         cfg = attn_ops[0].config
         assert cfg["batch"] == 2
@@ -478,13 +505,13 @@ class TestOperatorTypeCOMPUTE:
 
     def test_relu_produces_compute(self, config):
         model = nn.Sequential(nn.Linear(16, 8), nn.ReLU())
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         compute_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.MATH]
         assert len(compute_ops) >= 1
 
     def test_layernorm_produces_compute(self, config):
         model = nn.LayerNorm(16)
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         compute_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.MATH]
         assert len(compute_ops) >= 1
 
@@ -494,14 +521,14 @@ class TestOperatorTypeCOMPUTE:
                 return F.gelu(x)
 
         model = GELUModel()
-        graph = trace_model_for_inference(model, torch.randn(4, 16).cuda(), config)
+        graph = _trace(model, torch.randn(4, 16).cuda(), config)
         compute_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.MATH]
         assert len(compute_ops) >= 1
 
     def test_conv1d_produces_compute(self, config):
         model = nn.Conv1d(16, 16, kernel_size=3, padding=1)
         # Conv1d expects (batch, channels, length)
-        graph = trace_model_for_inference(model, torch.randn(2, 16, 32).cuda(), config)
+        graph = _trace(model, torch.randn(2, 16, 32).cuda(), config)
         compute_ops = [op for op in graph.operators.values() if op.op_type == OperatorType.MATH]
         assert len(compute_ops) >= 1
 
@@ -521,18 +548,6 @@ class TestOperatorTypeCOLLECTIVE:
         graph.add_operator(node)
         assert len(graph) == 1
         assert graph.operators["allreduce_0"].op_type == OperatorType.COLLECTIVE
-
-    def test_collective_in_critical_path(self):
-        graph = OperatorGraph("collective_test")
-        compute = OperatorNode(name="gemm_0", op_type=OperatorType.GEMM, estimated_time_ms=1.0)
-        coll = OperatorNode(
-            name="allreduce_0", op_type=OperatorType.COLLECTIVE,
-            estimated_time_ms=2.0, data_deps=["gemm_0"],
-        )
-        graph.add_operator(compute)
-        graph.add_operator(coll)
-        cp = graph.compute_critical_path()
-        assert cp == pytest.approx(3.0)
 
     def test_collective_in_summary(self):
         graph = OperatorGraph("collective_test")
@@ -559,18 +574,6 @@ class TestOperatorTypeMEMORY:
         assert len(graph) == 1
         assert graph.operators["copy_0"].op_type == OperatorType.MEMORY
 
-    def test_memory_in_critical_path(self):
-        graph = OperatorGraph("memory_test")
-        graph.add_operator(OperatorNode(
-            name="compute_0", op_type=OperatorType.MATH, estimated_time_ms=1.0,
-        ))
-        graph.add_operator(OperatorNode(
-            name="copy_0", op_type=OperatorType.MEMORY,
-            estimated_time_ms=0.5, data_deps=["compute_0"],
-        ))
-        cp = graph.compute_critical_path()
-        assert cp == pytest.approx(1.5)
-
     def test_memory_in_summary(self):
         graph = OperatorGraph("memory_test")
         graph.add_operator(OperatorNode(
@@ -582,7 +585,7 @@ class TestOperatorTypeMEMORY:
 
 @requires_cuda
 class TestOperatorTypeBARRIER:
-    """BARRIER operator type: waits for ALL streams in critical path."""
+    """BARRIER operator type."""
 
     def test_barrier_node_in_graph(self):
         graph = OperatorGraph("barrier_test")
@@ -590,28 +593,6 @@ class TestOperatorTypeBARRIER:
             name="barrier_0", op_type=OperatorType.BARRIER, estimated_time_ms=0.0,
         ))
         assert graph.operators["barrier_0"].op_type == OperatorType.BARRIER
-
-    def test_barrier_waits_for_all_streams(self):
-        """BARRIER waits for the slowest of all streams."""
-        graph = OperatorGraph("barrier_test")
-        # Stream 0: fast op
-        graph.add_operator(OperatorNode(
-            name="fast_op", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=0,
-        ))
-        # Stream 1: slow op
-        graph.add_operator(OperatorNode(
-            name="slow_op", op_type=OperatorType.MATH,
-            estimated_time_ms=5.0, stream_id=1,
-        ))
-        # Barrier on stream 0 - should wait for stream 1 too
-        graph.add_operator(OperatorNode(
-            name="barrier_0", op_type=OperatorType.BARRIER,
-            estimated_time_ms=0.0, stream_id=0, stream_deps=["fast_op"],
-        ))
-        cp = graph.compute_critical_path()
-        # Barrier must wait for slow_op (5.0 ms) even though it's on stream 0
-        assert cp >= 5.0
 
     def test_barrier_in_summary(self):
         graph = OperatorGraph("barrier_test")
@@ -624,7 +605,7 @@ class TestOperatorTypeBARRIER:
 
 @requires_cuda
 class TestOperatorTypeSTREAM_SYNC:
-    """STREAM_SYNC operator type: waits for a specific target stream."""
+    """STREAM_SYNC operator type."""
 
     def test_stream_sync_node_in_graph(self):
         graph = OperatorGraph("sync_test")
@@ -633,35 +614,6 @@ class TestOperatorTypeSTREAM_SYNC:
             estimated_time_ms=0.0, config={"target_stream": 1},
         ))
         assert graph.operators["sync_0"].op_type == OperatorType.STREAM_SYNC
-
-    def test_stream_sync_waits_for_target_stream(self):
-        """STREAM_SYNC waits for its target stream only."""
-        graph = OperatorGraph("sync_test")
-        # Stream 0: has an op
-        graph.add_operator(OperatorNode(
-            name="op_s0", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=0,
-        ))
-        # Stream 1: slow op
-        graph.add_operator(OperatorNode(
-            name="op_s1", op_type=OperatorType.MATH,
-            estimated_time_ms=5.0, stream_id=1,
-        ))
-        # Stream 0: sync waits for stream 1
-        graph.add_operator(OperatorNode(
-            name="sync_0", op_type=OperatorType.STREAM_SYNC,
-            estimated_time_ms=0.0, stream_id=0,
-            stream_deps=["op_s0"], data_deps=["op_s1"],
-            config={"target_stream": 1},
-        ))
-        # Op after sync on stream 0
-        graph.add_operator(OperatorNode(
-            name="after_sync", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=0, stream_deps=["sync_0"],
-        ))
-        cp = graph.compute_critical_path()
-        # sync waits for op_s1 (5.0), then after_sync (1.0) → 6.0
-        assert cp == pytest.approx(6.0)
 
     def test_stream_sync_in_summary(self):
         graph = OperatorGraph("sync_test")
@@ -676,61 +628,6 @@ class TestOperatorTypeSTREAM_SYNC:
 @requires_cuda
 class TestAllOperatorTypesInMixedGraph:
     """Verify all 7 operator types coexist correctly in a single graph."""
-
-    def test_mixed_graph_critical_path(self):
-        graph = OperatorGraph("mixed")
-
-        # GEMM on stream 0
-        graph.add_operator(OperatorNode(
-            name="gemm_0", op_type=OperatorType.GEMM,
-            estimated_time_ms=2.0, stream_id=0,
-        ))
-        # ATTENTION on stream 0
-        graph.add_operator(OperatorNode(
-            name="attn_0", op_type=OperatorType.ATTN,
-            estimated_time_ms=3.0, stream_id=0, stream_deps=["gemm_0"],
-        ))
-        # COMPUTE on stream 1
-        graph.add_operator(OperatorNode(
-            name="compute_0", op_type=OperatorType.MATH,
-            estimated_time_ms=1.0, stream_id=1,
-        ))
-        # COLLECTIVE on stream 1
-        graph.add_operator(OperatorNode(
-            name="collective_0", op_type=OperatorType.COLLECTIVE,
-            estimated_time_ms=4.0, stream_id=1, stream_deps=["compute_0"],
-        ))
-        # MEMORY on stream 0
-        graph.add_operator(OperatorNode(
-            name="memory_0", op_type=OperatorType.MEMORY,
-            estimated_time_ms=0.5, stream_id=0, stream_deps=["attn_0"],
-        ))
-        # BARRIER on stream 0 (waits for ALL streams)
-        graph.add_operator(OperatorNode(
-            name="barrier_0", op_type=OperatorType.BARRIER,
-            estimated_time_ms=0.0, stream_id=0, stream_deps=["memory_0"],
-        ))
-        # STREAM_SYNC on stream 0 (waits for stream 1)
-        graph.add_operator(OperatorNode(
-            name="sync_0", op_type=OperatorType.STREAM_SYNC,
-            estimated_time_ms=0.0, stream_id=0, stream_deps=["barrier_0"],
-            config={"target_stream": 1},
-        ))
-
-        cp = graph.compute_critical_path()
-        assert cp > 0.0
-
-        # All 7 types present
-        types = {op.op_type for op in graph.operators.values()}
-        assert types == {
-            OperatorType.GEMM,
-            OperatorType.ATTN,
-            OperatorType.MATH,
-            OperatorType.COLLECTIVE,
-            OperatorType.MEMORY,
-            OperatorType.BARRIER,
-            OperatorType.STREAM_SYNC,
-        }
 
     def test_mixed_graph_summary_counts(self):
         graph = OperatorGraph("mixed")
@@ -749,3 +646,37 @@ class TestAllOperatorTypesInMixedGraph:
         assert "memory: 1" in s
         assert "barrier: 1" in s
         assert "stream_sync: 1" in s
+
+
+# ── P2P collective capture ────────────────────────────────────────────────
+
+def test_dist_noop_context_captures_isend_irecv():
+    """Patched isend/irecv emit COLLECTIVE nodes with kind=p2p, peer_rank, bytes."""
+    import torch
+    import torch.distributed as dist
+    from syssim.operator_graph import OperatorGraph, OperatorType
+    from syssim.tracer import _dist_noop_context
+    from syssim.training.dist_setup import init_fake_process_group, destroy_process_group
+
+    init_fake_process_group(world_size=2, rank=0)
+    try:
+        graph = OperatorGraph(name="t")
+        last = {}
+        with _dist_noop_context(graph=graph, last_op_on_stream=last):
+            t = torch.empty(64, 64, dtype=torch.float32)
+            dist.isend(t, dst=1, tag=7)
+            dist.irecv(t, src=1, tag=7)
+
+        p2p_ops = [op for op in graph.operators.values()
+                   if op.op_type == OperatorType.COLLECTIVE and op.config.get("kind") == "p2p"]
+        assert len(p2p_ops) == 2
+        send = next(op for op in p2p_ops if op.config["direction"] == "send")
+        recv = next(op for op in p2p_ops if op.config["direction"] == "recv")
+        assert send.config["peer_rank"] == 1
+        assert recv.config["peer_rank"] == 1
+        assert send.config["tag"] == 7
+        assert recv.config["tag"] == 7
+        assert send.config["bytes"] == 64 * 64 * 4
+        assert recv.config["bytes"] == 64 * 64 * 4
+    finally:
+        destroy_process_group()

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 import torch
 import torch.nn as nn
@@ -160,52 +160,6 @@ def _make_fake_inputs(
 
 
 # ---------------------------------------------------------------------------
-# Storage tracking
-# ---------------------------------------------------------------------------
-
-def _storage_key(tensor: torch.Tensor) -> int:
-    """Return a key identifying the tensor's underlying storage.
-
-    Uses id(untyped_storage()) which works for FakeTensors where data_ptr() == 0.
-    Views share the same untyped_storage object, so aliases are correctly identified.
-    """
-    return id(tensor.untyped_storage())
-
-
-class TensorStorageTracker:
-    """Maps tensor storage to the producer operator name."""
-
-    def __init__(self) -> None:
-        self._storage_to_producer: dict[int, str] = {}
-
-    def register_output(self, tensor: torch.Tensor, producer_name: str) -> None:
-        if isinstance(tensor, torch.Tensor):
-            key = _storage_key(tensor)
-            self._storage_to_producer[key] = producer_name
-
-    def register_outputs(self, pytree_val: Any, producer_name: str) -> None:
-        flat, _ = tree_flatten(pytree_val)
-        for val in flat:
-            if isinstance(val, torch.Tensor):
-                self.register_output(val, producer_name)
-
-    def get_producer(self, tensor: torch.Tensor) -> Optional[str]:
-        if isinstance(tensor, torch.Tensor):
-            key = _storage_key(tensor)
-            return self._storage_to_producer.get(key)
-        return None
-
-    def register_alias(self, alias: torch.Tensor, source: torch.Tensor) -> None:
-        """Safety net: if view op creates a new storage object somehow, link it."""
-        if isinstance(alias, torch.Tensor) and isinstance(source, torch.Tensor):
-            src_key = _storage_key(source)
-            producer = self._storage_to_producer.get(src_key)
-            if producer is not None:
-                alias_key = _storage_key(alias)
-                self._storage_to_producer[alias_key] = producer
-
-
-# ---------------------------------------------------------------------------
 # CUDA Event tracking
 # ---------------------------------------------------------------------------
 
@@ -251,17 +205,19 @@ class CUDAEventTracker:
             idx = tracker._op_counter[0]
             tracker._op_counter[0] += 1
             name = f"stream_sync_{idx}"
+            predecessors: list[str] = []
+            last_op = tracker._last_op_on_stream.get(stream_id)
+            if last_op is not None:
+                predecessors.append(last_op)
+            if src_last_op is not None and src_last_op not in predecessors:
+                predecessors.append(src_last_op)
             node = OperatorNode(
                 name=name,
                 op_type=OperatorType.STREAM_SYNC,
                 stream_id=stream_id,
                 config={"target_stream": src_stream},
+                predecessors=predecessors,
             )
-            last_op = tracker._last_op_on_stream.get(stream_id)
-            if last_op is not None:
-                node.stream_deps.append(last_op)
-            if src_last_op is not None:
-                node.data_deps.append(src_last_op)
             tracker._graph.add_operator(node)
             tracker._last_op_on_stream[stream_id] = name
 
@@ -386,21 +342,22 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
     def __init__(
         self,
         graph: OperatorGraph,
-        storage_tracker: TensorStorageTracker,
         last_op_on_stream: dict[int, str],
         op_counter: list[int],
         hw_info: Any = None,
         execution_mode: Optional[ExecutionMode] = None,
         cache_seq_len: int = 0,
+        mod_tracker: Any = None,
     ) -> None:
         super().__init__()
         self._graph = graph
-        self._storage = storage_tracker
         self._last_op_on_stream = last_op_on_stream
         self._op_counter = op_counter
         self._hw_info = hw_info
         self._execution_mode = execution_mode
         self._cache_seq_len = cache_seq_len
+        # ModuleTracker whose `is_bw` flag tags each captured op's training phase.
+        self._mod_tracker = mod_tracker
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
@@ -411,38 +368,30 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         if packet_name in _METADATA_PACKET_NAMES:
             return func(*args, **kwargs)
 
-        # 2. View ops: execute, track aliasing, no node
+        # 2. View ops: execute, no node, no storage tracking
         if func_packet in _VIEW_OPS:
-            out = func(*args, **kwargs)
-            # Track aliasing: find the first tensor arg as source
-            flat_args, _ = tree_flatten(args)
-            source = None
-            for a in flat_args:
-                if isinstance(a, torch.Tensor):
-                    source = a
-                    break
-            if source is not None:
-                flat_out, _ = tree_flatten(out)
-                for o in flat_out:
-                    if isinstance(o, torch.Tensor):
-                        self._storage.register_alias(o, source)
-            return out
+            return func(*args, **kwargs)
 
-        # 3. Create ops: execute, zero-time node, register output
+        # 3. Create ops: execute, zero-time node
         if func_packet in _CREATE_OPS:
             out = func(*args, **kwargs)
             idx = self._op_counter[0]
             self._op_counter[0] += 1
             name = f"op_{idx}_{packet_name}"
+            # Read the live CUDA stream
+            stream_id = torch.cuda.current_stream().stream_id
+            prev_op = self._last_op_on_stream.get(stream_id)
+            predecessors = [prev_op] if prev_op is not None else []
             node = OperatorNode(
                 name=name,
                 op_type=OperatorType.MATH,
                 estimated_time_ms=0.0,
                 outputs=_collect_tensor_metas(out),
+                stream_id=stream_id,
+                predecessors=predecessors,
             )
             self._graph.add_operator(node)
-            self._storage.register_outputs(out, name)
-            self._last_op_on_stream[node.stream_id] = name
+            self._last_op_on_stream[stream_id] = name
             return out
 
         # Execute the op — skip NCCL for collective ops (fake tensors crash real NCCL)
@@ -463,28 +412,25 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         # 4. Classify the operation
         op_type, config = _classify_op(func_packet, func, args, kwargs)
         if op_type is None:
-            # Unknown op -- still register output for dependency tracking
             return out
 
-        # 5. Collect data dependencies from input tensors
-        flat_args, _ = tree_flatten((args, kwargs))
-        data_deps: list[str] = []
-        seen_deps: set[str] = set()
-        for a in flat_args:
-            if isinstance(a, torch.Tensor):
-                producer = self._storage.get_producer(a)
-                if producer is not None and producer not in seen_deps:
-                    data_deps.append(producer)
-                    seen_deps.add(producer)
+        # Tag the training phase from the module tracker's backward flag so the
+        # report can split forward vs backward compute time.
+        if self._mod_tracker is not None:
+            if config is None:
+                config = {}
+            config.setdefault("phase", "backward" if self._mod_tracker.is_bw else "forward")
 
-        # 6. Stream dependency (same-stream ordering)
-        stream_id = 0  # Default stream
-        stream_deps: list[str] = []
+        # 5. Read the live CUDA stream — was hardcoded to 0
+        stream_id = torch.cuda.current_stream().stream_id
+
+        # Single predecessors list: stream FIFO only. Cross-stream causality comes
+        # from explicit sync primitives (collective capture, CUDAEventTracker,
+        # _MockDistHandle.wait), not from inferred producer→consumer relations.
         prev_op = self._last_op_on_stream.get(stream_id)
-        if prev_op is not None and prev_op not in seen_deps:
-            stream_deps.append(prev_op)
+        predecessors = [prev_op] if prev_op is not None else []
 
-        # 7. Estimate time using predictor (decoupled)
+        # 6. Estimate time using predictor (decoupled)
         estimated_time_ms = 0.0
         if self._hw_info is not None and func_packet not in _IGNORE_OPS:
             try:
@@ -498,7 +444,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
                 log.debug(f"Runtime estimation failed for {packet_name}: {e}")
                 estimated_time_ms = 0.0
 
-        # 8. Create node
+        # 7. Create node
         idx = self._op_counter[0]
         self._op_counter[0] += 1
         name = f"op_{idx}_{packet_name}"
@@ -507,8 +453,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
             name=name,
             op_type=op_type,
             config=config,
-            data_deps=data_deps,
-            stream_deps=stream_deps,
+            predecessors=predecessors,
             stream_id=stream_id,
             inputs=_collect_tensor_metas((args, kwargs)),
             outputs=_collect_tensor_metas(out),
@@ -516,7 +461,6 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         )
 
         self._graph.add_operator(node)
-        self._storage.register_outputs(out, name)
         self._last_op_on_stream[stream_id] = name
 
         return out
@@ -533,59 +477,256 @@ class _MockDistHandle:
     calls handle.wait() in the backward pass. Since we replace real collectives
     with no-ops, we must return an object that responds to .wait().
     """
-    def wait(self):
-        pass
+    # Set by _dist_noop_context for async ops; None for sync ops where the
+    # caller-stream sync was already inserted at dispatch time.
+    _producer_collective: Optional[str] = None
+    # Set by _dist_noop_context — shared closure into the active capture state.
+    _capture_graph: ClassVar[Optional["OperatorGraph"]] = None
+    _capture_last_op: ClassVar[Optional[dict[int, str]]] = None
 
-    def is_completed(self):
+    def wait(self) -> None:
+        if (self._producer_collective is not None
+                and _MockDistHandle._capture_graph is not None
+                and _MockDistHandle._capture_last_op is not None):
+            import torch
+            g = _MockDistHandle._capture_graph
+            last_op = _MockDistHandle._capture_last_op
+            caller = torch.cuda.current_stream().stream_id
+            prev = last_op.get(caller)
+            idx = len(g.operators)
+            sync_name = f"async_wait_{idx}"
+            preds = [self._producer_collective] + ([prev] if prev else [])
+            g.add_operator(OperatorNode(
+                name=sync_name,
+                op_type=OperatorType.STREAM_SYNC,
+                config={"reason": "async_collective_wait", "target_stream": 1},
+                predecessors=preds,
+                stream_id=caller,
+            ))
+            last_op[caller] = sync_name
+
+    def is_completed(self) -> bool:
         return True
 
 
 @contextlib.contextmanager
-def _dist_noop_context():
-    """Monkey-patch torch.distributed collectives to be no-ops during tracing.
+def _dist_noop_context(
+    graph: Optional["OperatorGraph"] = None,
+    last_op_on_stream: Optional[dict] = None,
+):
+    """Patch torch.distributed collectives to no-ops during tracing.
 
-    torch.distributed.all_reduce / all_gather / reduce_scatter call directly
-    into C++ ProcessGroup bindings which cannot accept FakeTensors. This
-    context manager replaces them with no-ops for the duration of the trace.
-    In-place ops (all_reduce, broadcast) leave tensors unchanged; out-of-place
-    ops (all_gather_into_tensor, reduce_scatter_tensor) expect pre-allocated
-    output tensors with the right shapes — Megatron always pre-allocates them.
-    Returns a _MockDistHandle for async ops so that handle.wait() doesn't crash.
+    Default (graph=None): preserves the original no-op-with-mock-handle behavior.
+
+    Opt-in capture (graph != None and last_op_on_stream != None):
+      - Each patched call records a COLLECTIVE OperatorNode on stream_id=1.
+      - predecessors = [last_op_on_stream[caller_stream], last_op_on_stream[1]] (filtered Nones)
+      - For SYNC collectives (async_op=False, default): also insert a STREAM_SYNC
+        on the caller stream with predecessors=[COLLECTIVE]; this becomes the new
+        last_op_on_stream[caller], so subsequent compute on the caller stream
+        waits for the collective. Mirrors NCCL's post-sync semantics.
+      - For ASYNC collectives (async_op=True): the returned _MockDistHandle
+        carries the COLLECTIVE name; its .wait() emits a STREAM_SYNC then.
+      - barrier() → BARRIER node on the caller stream.
     """
     import torch.distributed as dist
-
-    # Only patch if distributed is available (no-op otherwise)
     if not dist.is_available():
         yield
         return
 
-    # Save originals
     orig = {
         name: getattr(dist, name)
         for name in (
-            "all_reduce",
-            "broadcast",
-            "all_gather",
-            "all_gather_into_tensor",
-            "reduce_scatter",
-            "reduce_scatter_tensor",
+            "all_reduce", "broadcast",
+            "all_gather", "all_gather_into_tensor",
+            "reduce_scatter", "reduce_scatter_tensor",
             "barrier",
+            "isend", "irecv", "send", "recv",
+            "batch_isend_irecv",
         )
         if hasattr(dist, name)
     }
 
-    _handle = _MockDistHandle()
+    def _caller_stream_id() -> int:
+        return torch.cuda.current_stream().stream_id
 
-    def _noop(*args, **kwargs):
-        return _handle  # Return mock handle so callers can call .wait()
+    def _record_collective(name, tensor, group):
+        """Return the new COLLECTIVE node name (or None if not capturing)."""
+        if graph is None or last_op_on_stream is None or tensor is None or not hasattr(tensor, "numel"):
+            return None
+        try:
+            ranks = (dist.get_process_group_ranks(group) if group is not None
+                     else list(range(dist.get_world_size())))
+        except Exception:
+            ranks = []
+        caller = _caller_stream_id()
+        preds = [last_op_on_stream.get(caller), last_op_on_stream.get(1)]
+        preds = [p for p in preds if p is not None]
+        idx = len(graph.operators)
+        node_name = f"collective_{idx}_{name}"
+        graph.add_operator(OperatorNode(
+            name=node_name,
+            op_type=OperatorType.COLLECTIVE,
+            config={
+                "collective": name,
+                "bytes": tensor.numel() * tensor.element_size(),
+                "group_ranks": ranks,
+            },
+            predecessors=preds,
+            stream_id=1,
+        ))
+        last_op_on_stream[1] = node_name
+        return node_name
 
+    def _record_sync_post(collective_name: str) -> None:
+        """For sync collectives, insert a STREAM_SYNC on caller stream after the collective."""
+        if graph is None or last_op_on_stream is None or collective_name is None:
+            return
+        caller = _caller_stream_id()
+        prev_caller = last_op_on_stream.get(caller)
+        idx = len(graph.operators)
+        sync_name = f"sync_post_{idx}"
+        preds = [collective_name] + ([prev_caller] if prev_caller is not None else [])
+        graph.add_operator(OperatorNode(
+            name=sync_name,
+            op_type=OperatorType.STREAM_SYNC,
+            config={"reason": "sync_collective_caller_wait", "target_stream": 1},
+            predecessors=preds,
+            stream_id=caller,
+        ))
+        last_op_on_stream[caller] = sync_name
+
+    def _wrap_inplace(name):
+        def fn(tensor, *args, **kwargs):
+            async_op = kwargs.get("async_op", False)
+            coll_name = _record_collective(name, tensor, kwargs.get("group"))
+            handle = _MockDistHandle()
+            handle._producer_collective = coll_name           # for async wait
+            if not async_op:
+                _record_sync_post(coll_name)
+            return handle
+        return fn
+
+    def _wrap_outofplace(name):
+        def fn(output, input_, *args, **kwargs):
+            async_op = kwargs.get("async_op", False)
+            t = output if hasattr(output, "numel") else input_
+            coll_name = _record_collective(name, t, kwargs.get("group"))
+            handle = _MockDistHandle()
+            handle._producer_collective = coll_name
+            if not async_op:
+                _record_sync_post(coll_name)
+            return handle
+        return fn
+
+    def _wrap_barrier(_name):
+        def fn(*args, **kwargs):
+            if graph is not None and last_op_on_stream is not None:
+                caller = _caller_stream_id()
+                prev = last_op_on_stream.get(caller)
+                idx = len(graph.operators)
+                node_name = f"barrier_{idx}"
+                preds = [prev] if prev is not None else []
+                graph.add_operator(OperatorNode(
+                    name=node_name,
+                    op_type=OperatorType.BARRIER,
+                    predecessors=preds,
+                    stream_id=caller,
+                ))
+                last_op_on_stream[caller] = node_name
+            return _MockDistHandle()
+        return fn
+
+    def _record_p2p(direction: str, tensor, peer: int, tag: int) -> Optional[str]:
+        """Emit a COLLECTIVE node tagged kind=p2p; return its name."""
+        if graph is None or last_op_on_stream is None or tensor is None:
+            return None
+        caller = _caller_stream_id()
+        preds = [last_op_on_stream.get(caller), last_op_on_stream.get(1)]
+        preds = [p for p in preds if p is not None]
+        idx = len(graph.operators)
+        node_name = f"p2p_{direction}_{idx}"
+        graph.add_operator(OperatorNode(
+            name=node_name,
+            op_type=OperatorType.COLLECTIVE,
+            config={
+                "kind": "p2p",
+                "direction": direction,
+                "peer_rank": peer,
+                "tag": tag,
+                "bytes": tensor.numel() * tensor.element_size(),
+            },
+            predecessors=preds,
+            stream_id=1,
+        ))
+        last_op_on_stream[1] = node_name
+        return node_name
+
+    def _wrap_p2p(direction: str, peer_kwarg: str):
+        """direction is 'send' or 'recv'; peer_kwarg is 'dst' (send) or 'src' (recv)."""
+        def fn(tensor, *args, **kwargs):
+            peer = kwargs.get(peer_kwarg, args[0] if args else -1)
+            tag = kwargs.get("tag", 0)
+            coll_name = _record_p2p(direction, tensor, peer, tag)
+            handle = _MockDistHandle()
+            handle._producer_collective = coll_name
+            return handle
+        return fn
+
+    def _wrap_batch_isend_irecv(_name):
+        def fn(p2p_op_list, *args, **kwargs):
+            handles = []
+            for p2p_op in p2p_op_list:
+                op_func = getattr(p2p_op, "op", None)
+                tensor = getattr(p2p_op, "tensor", None)
+                peer = getattr(p2p_op, "peer", -1)
+                tag = getattr(p2p_op, "tag", 0)
+                direction = "send" if op_func is dist.isend else "recv"
+                coll_name = _record_p2p(direction, tensor, peer, tag)
+                h = _MockDistHandle()
+                h._producer_collective = coll_name
+                handles.append(h)
+            return handles
+        return fn
+
+    patched = {
+        "all_reduce":              _wrap_inplace("all_reduce"),
+        "broadcast":               _wrap_inplace("broadcast"),
+        "all_gather":              _wrap_outofplace("all_gather"),
+        "all_gather_into_tensor":  _wrap_outofplace("all_gather_into_tensor"),
+        "reduce_scatter":          _wrap_outofplace("reduce_scatter"),
+        "reduce_scatter_tensor":   _wrap_outofplace("reduce_scatter_tensor"),
+        "barrier":                 _wrap_barrier("barrier"),
+        "isend":                   _wrap_p2p("send", "dst"),
+        "irecv":                   _wrap_p2p("recv", "src"),
+        "send":                    _wrap_p2p("send", "dst"),
+        "recv":                    _wrap_p2p("recv", "src"),
+        "batch_isend_irecv":       _wrap_batch_isend_irecv("batch_isend_irecv"),
+    }
+    # Populate the ClassVars so _MockDistHandle.wait() can emit STREAM_SYNC nodes
+    # even when called outside OperatorGraphTracer (e.g. in unit tests).
+    if graph is not None and last_op_on_stream is not None:
+        _MockDistHandle._capture_graph = graph
+        _MockDistHandle._capture_last_op = last_op_on_stream
+    # P2POp.__new__ calls _check_op which validates op against the *module-level*
+    # `isend`/`irecv` names inside distributed_c10d — not against dist.isend/irecv.
+    # Patching dist.isend/irecv doesn't update those internal references, so
+    # P2POp construction fails during tracing. Bypass the check with a no-op.
+    import torch.distributed.distributed_c10d as _d10d
+    _orig_check_op = _d10d._check_op
     try:
         for name in orig:
-            setattr(dist, name, _noop)
+            setattr(dist, name, patched[name])
+        _d10d._check_op = lambda op: None  # allow mocked isend/irecv in P2POp
         yield
     finally:
         for name, fn in orig.items():
             setattr(dist, name, fn)
+        _d10d._check_op = _orig_check_op
+        # Only clear ClassVars if we set them (don't clobber an outer context)
+        if graph is not None and last_op_on_stream is not None:
+            _MockDistHandle._capture_graph = None
+            _MockDistHandle._capture_last_op = None
 
 
 # ---------------------------------------------------------------------------
@@ -595,11 +736,11 @@ def _dist_noop_context():
 class OperatorGraphTracer:
     """Traces a PyTorch model and builds an OperatorGraph.
 
-    Usage::
-
-        tracer = OperatorGraphTracer(hw_info=hw)
-        graph = tracer.trace(model, example_inputs)
-        print(graph.summary())
+    Megatron-shaped signature: the caller supplies a `forward_backward_func`
+    (typically the return value of
+    `megatron.core.pipeline_parallel.get_forward_backward_func()`). The tracer
+    sets up fake CUDA + dispatch contexts and invokes `forward_backward_func`
+    with the kwargs passed through verbatim.
     """
 
     def __init__(
@@ -611,64 +752,138 @@ class OperatorGraphTracer:
         self._hw_info = hw_info
         self._execution_mode = execution_mode
         self._cache_seq_len = cache_seq_len
+        from .training.mem_profile import MemoryProfile
+        self.memory_estimate = MemoryProfile()
 
     def trace(
         self,
         model: nn.Module,
-        example_inputs: Any,
-        forward_backward: bool = False,
-        loss_fn: Any = None,
+        forward_backward_func,
+        *,
+        forward_step_func,
+        data_iterator,
+        num_microbatches: int,
+        seq_length: int,
+        micro_batch_size: int,
+        forward_only: bool = False,
     ) -> OperatorGraph:
+        """Run `forward_backward_func(...)` under FakeTensorMode + TorchDispatchMode."""
         if not torch.cuda.is_available():
             raise RuntimeError(
-                "rlsysim requires a CUDA-capable device for tracing. "
-                "Fake CUDA tensors are used internally so that PyTorch "
-                "dispatches to GPU kernel variants (flash attention, etc.)."
+                "syssim tracer requires a CUDA-capable device. "
+                "Fake CUDA tensors are used internally so PyTorch dispatches "
+                "to GPU kernel variants (flash attention, etc.)."
             )
 
         graph = OperatorGraph(name=type(model).__name__)
-        storage_tracker = TensorStorageTracker()
         last_op_on_stream: dict[int, str] = {}
-        op_counter = [0]  # Mutable counter shared with sub-components
+        op_counter = [0]
 
         cuda_tracker = CUDAEventTracker(graph, last_op_on_stream, op_counter)
         mod_tracker = ModuleTracker()
         fake_mode = FakeTensorMode(allow_non_fake_inputs=True)
         tracer_mode = _OperatorGraphTracerMode(
             graph=graph,
-            storage_tracker=storage_tracker,
             last_op_on_stream=last_op_on_stream,
             op_counter=op_counter,
             hw_info=self._hw_info,
             execution_mode=self._execution_mode,
             cache_seq_len=self._cache_seq_len,
+            mod_tracker=mod_tracker,
         )
 
-        if loss_fn is None:
-            loss_fn = lambda out: out.sum() if isinstance(out, torch.Tensor) else out[0].sum()
-
-        # Use current CUDA device so multi-rank jobs (TP/PP/DP) trace on the
-        # correct per-rank device rather than always cuda:0.
         trace_device = f"cuda:{torch.cuda.current_device()}"
 
         cuda_tracker.install_hooks()
         try:
-            # Phase 1: convert model + inputs to fake CUDA (NO dispatch mode active)
             restore_log = _convert_model_to_fake(model, fake_mode, trace_device)
-            fake_inputs = _make_fake_inputs(example_inputs, fake_mode, trace_device)
+            _MockDistHandle._capture_graph = graph
+            _MockDistHandle._capture_last_op = last_op_on_stream
             try:
-                # Phase 2: trace with fake_mode + tracer_mode active.
-                # _dist_noop_context patches torch.distributed collectives to
-                # be no-ops so that Megatron's all_reduce / all_gather calls
-                # don't try to pass FakeTensors to C++ NCCL bindings.
-                with _dist_noop_context(), fake_mode, mod_tracker, tracer_mode:
-                    out = model(**fake_inputs) if isinstance(fake_inputs, dict) else model(*fake_inputs)
-                    if forward_backward:
-                        loss = loss_fn(out)
-                        loss.backward()
+                with _dist_noop_context(graph=graph,
+                                        last_op_on_stream=last_op_on_stream), \
+                     fake_mode, mod_tracker, tracer_mode:
+                    forward_backward_func(
+                        forward_step_func=forward_step_func,
+                        data_iterator=data_iterator,
+                        model=model,
+                        num_microbatches=num_microbatches,
+                        seq_length=seq_length,
+                        micro_batch_size=micro_batch_size,
+                        forward_only=forward_only,
+                    )
             finally:
                 _restore_model(restore_log)
+                _MockDistHandle._capture_graph = None
+                _MockDistHandle._capture_last_op = None
         finally:
             cuda_tracker.remove_hooks()
 
         return graph
+
+    def estimate_memory(
+        self,
+        model: nn.Module,
+        forward_backward_func,
+        *,
+        forward_step_func,
+        data_iterator,
+        seq_length: int,
+        micro_batch_size: int,
+    ):
+        """Run ONE microbatch under MemTracker + a fake AdamW step to capture
+        the per-microbatch memory footprint. Sets and returns
+        ``self.memory_estimate`` (a MemoryProfile). Must run on a freshly-built
+        model BEFORE any runtime pass mutates gradients.
+        """
+        from .training.mem_tracker import MemTracker
+        from .training.mem_profile import MemoryProfile
+
+        # The memory pass builds no runtime op graph (no cuda_tracker/tracer_mode),
+        # but forward_backward_func still issues collective calls (TP/SP, PP
+        # send/recv). `graph` + `_dist_noop_context` are load-bearing: they make
+        # those collectives no-op on fake tensors instead of hitting real
+        # distributed. The graph itself is a throwaway and is never returned.
+        graph = OperatorGraph(name=type(model).__name__ + "_mem")
+        last_op_on_stream: dict[int, str] = {}
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True)
+        trace_device = f"cuda:{torch.cuda.current_device()}"
+
+        mem_tracker = MemTracker()
+        mem_tracker.track_external(model)
+
+        restore_log = _convert_model_to_fake(model, fake_mode, trace_device)
+        _MockDistHandle._capture_graph = graph
+        _MockDistHandle._capture_last_op = last_op_on_stream
+        try:
+            with _dist_noop_context(graph=graph, last_op_on_stream=last_op_on_stream), \
+                 fake_mode, mem_tracker:
+                forward_backward_func(
+                    forward_step_func=forward_step_func,
+                    data_iterator=data_iterator,
+                    model=model,
+                    num_microbatches=1,
+                    seq_length=seq_length,
+                    micro_batch_size=micro_batch_size,
+                    forward_only=False,
+                )
+                try:
+                    params = [p for p in model.parameters() if p.requires_grad]
+                    if params:
+                        opt = torch.optim.AdamW(params, lr=1e-3)
+                        for p in params:
+                            if p.grad is None:
+                                p.grad = torch.zeros_like(p)
+                        opt.step()
+                except Exception as e:
+                    log.debug(f"fake optimizer step for memory tracking failed: {e}")
+            try:
+                self.memory_estimate = MemoryProfile.from_mem_tracker(mem_tracker)
+            except Exception as e:
+                log.debug(f"MemTracker profile extraction failed: {e}")
+                self.memory_estimate = MemoryProfile()
+        finally:
+            _restore_model(restore_log)
+            _MockDistHandle._capture_graph = None
+            _MockDistHandle._capture_last_op = None
+        return self.memory_estimate

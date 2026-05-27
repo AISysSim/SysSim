@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "syssim"
+version = "0.1.0"
+description = "System Simulation framework for distributed training"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [{name = "SysSim Contributors"}]
+
+dependencies = [
+    "flashinfer-python>=0.6",
+    "megatron-core",
+    "numpy",
+    "pandas",
+    "pyyaml>=6.0",
+    "scikit-learn",
+    "torch>=2.6",
+    "transformers",
+    "xgboost",
+]
+
+[project.optional-dependencies]
+huggingface = [
+    "megatron-bridge",
+]
+
+[tool.pytest.ini_options]
+markers = ["slow: marks integration tests that spawn subprocesses or download HF configs"]
+addopts = "-m 'not slow'"

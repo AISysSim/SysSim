@@ -1,0 +1,3 @@
+huggingface: Qwen/Qwen3-8B
+overrides:
+  seq_length: 4096
