@@ -593,6 +593,41 @@ Graceful degradation when models unavailable:
 
 ---
 
+### 3.8 Low-Precision (FP8 / FP4) Support
+
+Blackwell-class hardware exposes distinct tensor-unit peaks for FP16/BF16, FP8, and FP4 (typically a 2× cadence per step). Treating these as one number underestimates FP8 runtime and overestimates FP4 runtime, so both the analytical roofline and the ML routing layer became dtype-aware.
+
+#### 3.8.1 Per-dtype peak FLOP/s
+
+`HardwareInfo` stores three matrix-unit peaks:
+
+- `peak_tflops_mm` — default tensor peak (FP16/BF16/FP32-accum)
+- `peak_tflops_mm_fp8` — FP8 tensor peak (Hopper+)
+- `peak_tflops_mm_fp4` — FP4 (NVFP4) tensor peak (Blackwell+)
+
+`HardwareInfo.get_peak_tflops_mm_for_dtype(dtype)` returns the right peak for a given dtype, with FP8 dtypes (`torch.float8_e4m3fn`, `torch.float8_e5m2`) and the `"nvfp4"` string sentinel mapping to their dedicated peaks and falling back to `peak_tflops_mm` on older hardware where the per-dtype field is `None`. The FP4 sentinel exists because FlashInfer's NVFP4 path packs values into `torch.uint8` and PyTorch has no native FP4 dtype.
+
+The roofline (`_add_roofline_and_efficiency`) and the feature extractor (`_extract_roofline_features`) both use this method, so efficiency lands in `(0, 1]` for every dtype rather than getting compressed against an FP16-only ceiling.
+
+#### 3.8.2 Per-`(op, dtype)` efficiency models
+
+`BackendManager` keys models by `(OperatorType, dtype)` rather than by `OperatorType` alone. At simulation time, `efficiency_estimate` derives the dtype from the operator's output tensor and looks up the matching model. If no per-dtype model is present for the requested `(op, dtype)` pair, it falls back to the FP16 model rather than failing — important because, on consumer Blackwell (sm_120) with FlashInfer 0.6, FP8 attention has zero valid profiling rows and no FP8 attention model is trained.
+
+Because FlashInfer NVFP4 outputs are `torch.uint8`, FP4 routing cannot be auto-detected from the output tensor. Workloads that genuinely run NVFP4 GEMMs set `SYSSIM_FORCE_DTYPE=fp4` to force the FP4 model path.
+
+#### 3.8.3 Reference workflow
+
+Driver scripts under `examples/` profile the supported `(op, dtype)` grid and train per-pair XGBoost models:
+
+```
+profile_pro6000.py   # FP16/FP8/FP4 GEMM, FP16/FP8 attention, FP16 RMSNorm/SiLU
+train_pro6000_models.py
+```
+
+The full report — peak numbers, MAPE per `(op, dtype)`, FlashInfer constraints, and reproduction recipe — lives in [`docs/docs/2026-04-30-pro6000-low-precision-profiling.md`](docs/docs/2026-04-30-pro6000-low-precision-profiling.md).
+
+---
+
 ## 4. Hardware Adaptation
 
 ### 4.1 Why Hardware-Specific ML Models?
