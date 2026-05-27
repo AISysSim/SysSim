@@ -524,31 +524,59 @@ def simulate(*, model, hardware, parallelism=None, training=None, workdir=None):
     return t.simulate_on(hardware)
 
 
-def estimate_memory(*, model, hardware, parallelism=None, training=None):
-    """Memory-only path — no tracing, returns MemoryBreakdown in ~1 ms.
+def estimate_memory(*, model, hardware, parallelism=None, training=None, workdir=None):
+    """Per-GPU peak memory via the MemTracker per-microbatch footprint scaled by the
+    1F1B in-flight count. Runs the trace's memory pass, SKIPS the runtime DES, and
+    returns a `SimulationReport` with only the memory fields populated (runtime
+    fields zero). Same memory path as `simulate()`."""
+    from .spec import load_hardware_yaml, ParallelismConfig, TrainingConfig
+    from .pipeline import in_flight_microbatches
+    from .report import SimulationReport, build_bottlenecks
 
-    For PP > 1, populates `pp_stage_memory_gb` with one entry per stage.
-    """
-    from .spec import (
-        load_model_yaml, load_hardware_yaml,
-        ParallelismConfig, TrainingConfig, HardwareConfig, ModelConfig,
-    )
-    from .sources import HFModel, resolve_megatron_provider
-    from .memory import peak_memory_gb_per_rank, per_pp_stage_peak_memory_gb
-    if isinstance(model, str):
-        model = load_model_yaml(model)
     if isinstance(hardware, str):
         hardware = load_hardware_yaml(hardware)
     parallelism = parallelism or ParallelismConfig()
     training = training or TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16")
-    if isinstance(model, HFModel):
-        provider = resolve_megatron_provider(model, parallelism, training)
-        model_for_mem = _provider_to_model_config(provider)
+
+    t = trace(model=model, parallelism=parallelism, training=training,
+              hardware=hardware, gpus_per_node=hardware.gpus_per_node, workdir=workdir)
+
+    # Same memory computation as _simulate_on_hardware: per-stage MemTracker
+    # footprint scaled by the 1F1B in-flight count; binding stage = max peak.
+    pp = parallelism.pipeline_model_parallel_size
+    profiles = t.per_stage_profiles or []
+    num_mb = max(1, training.global_batch_size
+                 // (training.micro_batch_size * parallelism.data_parallel_size))
+    pp_stage_memory_gb: list[float] = []
+    stage_by_type: list[dict] = []
+    for stage_rank, prof in enumerate(profiles):
+        infl = in_flight_microbatches(pp, stage_rank, num_mb)
+        pp_stage_memory_gb.append(prof.peak_gb(infl))
+        stage_by_type.append(prof.peak_by_type(infl))
+    if pp_stage_memory_gb:
+        binding_stage = max(range(len(pp_stage_memory_gb)),
+                            key=lambda s: pp_stage_memory_gb[s])
+        peak_gb = pp_stage_memory_gb[binding_stage]
+        mem_by_type = stage_by_type[binding_stage]
+        peak_module = profiles[binding_stage].peak_module
     else:
-        model_for_mem = model
-    breakdown = peak_memory_gb_per_rank(model_for_mem, parallelism, training)
-    if parallelism.pipeline_model_parallel_size > 1:
-        breakdown.pp_stage_memory_gb = per_pp_stage_peak_memory_gb(
-            model_for_mem, parallelism, training,
-        )
-    return breakdown
+        binding_stage, peak_gb, mem_by_type, peak_module = 0, 0.0, {}, ""
+        pp_stage_memory_gb = [0.0]
+
+    bottlenecks = build_bottlenecks(
+        t.graph, peak_memory_gb=peak_gb, gpu_memory_GB=hardware.gpu_memory_GB,
+        peak_module=peak_module, memory_by_type=mem_by_type, binding_stage=binding_stage,
+    )
+    return SimulationReport(
+        step_time_ms=0.0, forward_ms=0.0, backward_ms=0.0, optimizer_ms=0.0,
+        collective_total_ms=0.0, collective_exposed_ms=0.0, by_op_type_ms={},
+        model_flops_per_step=0, achieved_tflops=0.0, mfu=0.0, hfu=0.0,
+        param_bytes=mem_by_type.get("Parameter", 0) + mem_by_type.get("Buffer", 0),
+        grad_bytes=mem_by_type.get("Gradient", 0),
+        optimizer_state_bytes=mem_by_type.get("Optstate", 0),
+        activation_bytes=mem_by_type.get("Activation", 0) + mem_by_type.get("Temp", 0),
+        peak_memory_gb=peak_gb, pp_stage_memory_gb=pp_stage_memory_gb,
+        per_pp_rank_step_time_ms=[],
+        model=model, parallelism=parallelism, training=training,
+        hardware=hardware, bottlenecks=bottlenecks,
+    )

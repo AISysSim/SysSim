@@ -36,20 +36,3 @@ def test_per_pp_stage_memory_pp1():
     full = peak_memory_gb_per_rank(m, p, tr)
     assert len(per_stage) == 1
     assert abs(per_stage[0] - full.peak_gb) < 1e-6
-
-
-def test_estimate_memory_pp4_no_trace():
-    """estimate_memory with PP=4 returns a list of 4 stage values without spawning."""
-    from syssim.training import estimate_memory, ParallelismConfig, TrainingConfig
-
-    breakdown = estimate_memory(
-        model="examples/configs/models/qwen3-1_7b.yaml",
-        hardware="examples/configs/hardware/single_h100.yaml",
-        parallelism=ParallelismConfig(pp=4),
-        training=TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"),
-    )
-    # Existing MemoryBreakdown is per-rank scalar; the per-stage view comes via a new field.
-    assert hasattr(breakdown, "pp_stage_memory_gb")
-    assert len(breakdown.pp_stage_memory_gb) == 4
-    # peak_gb is the max across stages.
-    assert breakdown.peak_gb == max(breakdown.pp_stage_memory_gb)

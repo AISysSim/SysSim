@@ -94,20 +94,40 @@ def test_simulate_tp1_dp1_end_to_end(tmp_path):
     assert report.backward_ms > 0
 
 
-def test_estimate_memory_returns_quickly():
-    import time
+def test_estimate_memory_spmd(tmp_path):
+    pytest.importorskip("megatron.core")
     from syssim.training.runner import estimate_memory
-    from syssim.training.spec import (
-        ModelConfig, ParallelismConfig, TrainingConfig, HardwareConfig,
-    )
-    m = ModelConfig(num_layers=4, hidden_size=128, num_attention_heads=8, num_query_groups=8,
-                    ffn_hidden_size=512, seq_length=128, max_position_embeddings=128, vocab_size=256)
+    from syssim.training.spec import HardwareConfig
     hw = HardwareConfig(peak_tflops_mm=1979, peak_tflops_math=989,
-                        peak_memory_bandwidth_GBps=3350, gpus_per_node=1)
-    start = time.time()
+                        peak_memory_bandwidth_GBps=3350, gpus_per_node=1, gpu_memory_GB=80,
+                        topology={"type": "simple", "num_nodes": 1,
+                                  "intra_node_bandwidth_GBps": 900, "inter_node_bandwidth_GBps": 200})
+    m = ModelConfig(num_layers=2, hidden_size=128, num_attention_heads=8, num_query_groups=8,
+                    ffn_hidden_size=256, seq_length=64, max_position_embeddings=64, vocab_size=256)
+    # MemTracker-based memory; runtime DES skipped (step_time stays 0).
     mem = estimate_memory(model=m, hardware=hw,
-                          parallelism=ParallelismConfig(),
-                          training=TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"))
-    elapsed = time.time() - start
-    assert elapsed < 1.0  # no tracing — instant
-    assert mem.peak_gb > 0
+                          parallelism=ParallelismConfig(tp=1, dp=1),
+                          training=TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"),
+                          workdir=str(tmp_path))
+    assert mem.peak_memory_gb > 0
+    assert mem.param_bytes > 0
+    assert mem.step_time_ms == 0.0
+
+
+def test_estimate_memory_pp2_per_stage(tmp_path):
+    pytest.importorskip("megatron.core")
+    from syssim.training.runner import estimate_memory
+    from syssim.training.spec import HardwareConfig
+    hw = HardwareConfig(peak_tflops_mm=1979, peak_tflops_math=989,
+                        peak_memory_bandwidth_GBps=3350, gpus_per_node=2, gpu_memory_GB=80,
+                        topology={"type": "simple", "num_nodes": 1,
+                                  "intra_node_bandwidth_GBps": 900, "inter_node_bandwidth_GBps": 200})
+    m = ModelConfig(num_layers=4, hidden_size=128, num_attention_heads=8, num_query_groups=8,
+                    ffn_hidden_size=256, seq_length=64, max_position_embeddings=64, vocab_size=256)
+    mem = estimate_memory(model=m, hardware=hw,
+                          parallelism=ParallelismConfig(tp=1, dp=1, pp=2),
+                          training=TrainingConfig(micro_batch=1, global_batch=4, dtype="bf16"),
+                          workdir=str(tmp_path))
+    assert len(mem.pp_stage_memory_gb) == 2
+    assert mem.peak_memory_gb == max(mem.pp_stage_memory_gb)
+    assert mem.pp_stage_memory_gb[0] >= mem.pp_stage_memory_gb[1]  # 1F1B: earlier stage heavier

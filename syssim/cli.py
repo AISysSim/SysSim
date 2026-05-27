@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "memory":
         mem = syssim.estimate_memory(**_build_kwargs(args))
-        print(f"peak_memory_gb = {mem.peak_gb:.3f}")
+        print(f"peak_memory_gb = {mem.peak_memory_gb:.3f}")
         print(f"  param_bytes        = {mem.param_bytes}")
         print(f"  grad_bytes         = {mem.grad_bytes}")
         print(f"  optimizer_state_bytes = {mem.optimizer_state_bytes}")
