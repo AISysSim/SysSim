@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-**SysSim** estimates the step time and peak memory of LLM training — on hardware you don't have — without running real computation. It traces a model with fake CUDA tensors to build an operator graph, estimates per-operator time from roofline + ML-efficiency models, simulates collectives over a flow-level network model, and replays the graph through a stream-queue discrete-event simulator to get the critical path. For distributed runs it models tensor, sequence, data, and pipeline parallelism, and reports per-GPU memory (including pipeline-stage peaks and OOM).
+**SysSim** estimates the step time and peak memory of LLM training — on hardware you don't have — without running real computation. It models tensor, sequence, data, and pipeline parallelism and reports step time, MFU, and per-GPU memory (including per-pipeline-stage peaks and OOM).
 
 For in-depth technical architecture, see [DESIGN.md](DESIGN.md).
 
@@ -12,7 +12,7 @@ For in-depth technical architecture, see [DESIGN.md](DESIGN.md).
 - Estimate training step time and MFU on accelerators you can't access
 - Compare parallelism strategies (TP / SP / DP / PP) before allocating a cluster
 - Predict peak per-GPU memory and catch OOM ahead of time
-- Find the runtime and memory bottleneck (top ops, binding pipeline stage)
+- Find the runtime and memory bottleneck (top ops, heaviest pipeline stage)
 
 ---
 
@@ -22,7 +22,7 @@ For in-depth technical architecture, see [DESIGN.md](DESIGN.md).
 
 - Python 3.10+
 - PyTorch 2.6+ with CUDA support
-- A CUDA-capable GPU (required for tracing — FakeTensorMode dispatches to GPU kernel variants)
+- A CUDA-capable GPU
 - [Megatron-Core](https://github.com/NVIDIA/Megatron-LM) for the training simulator (`syssim.simulate`)
 
 ### Installation
@@ -30,34 +30,44 @@ For in-depth technical architecture, see [DESIGN.md](DESIGN.md).
 ```bash
 git clone https://github.com/AISysSim/SysSim.git
 cd SysSim
-
-# Install PyTorch with CUDA (adjust for your CUDA version)
-pip install torch --index-url https://download.pytorch.org/whl/cu128
-
-# Install SysSim
-pip install -e .                   # core
-pip install -e ".[profiler]"       # + pandas, scikit-learn, xgboost
-pip install -e ".[huggingface]"    # + transformers
-pip install -e ".[dev]"            # + pytest, ruff, pytest-cov
-pip install -e ".[all]"            # everything
+pip install -e .
 ```
 
-### Simulate a training step (Python)
+### High-level Python APIs
+
+Three entry points cover the common needs — run a simulation, check memory, or compare configs:
 
 ```python
 import syssim
 
+MODEL = "examples/configs/models/qwen3-1_7b.yaml"     # architecture YAML, ModelConfig, or HFModel
+HW    = "examples/configs/hardware/dgx_h100.yaml"     # hardware + topology YAML, or HardwareConfig
+
+# 1) simulate — full step-time / MFU / memory / bottleneck report
 report = syssim.simulate(
-    model="examples/configs/models/qwen3-1_7b.yaml",     # architecture YAML, ModelConfig, or HFModel
-    hardware="examples/configs/hardware/dgx_h100.yaml",  # hardware + topology YAML, or HardwareConfig
-    parallelism=syssim.ParallelismConfig(tp=2, dp=4),    # tp / dp / pp / cp / sp
+    model=MODEL, hardware=HW,
+    parallelism=syssim.ParallelismConfig(tp=2, dp=4),   # tp / dp / pp / cp / sp
     training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
 )
+print(report.step_time_ms, report.mfu, report.peak_memory_gb)
 
-print(report)                       # full breakdown (see "What you get")
-print(report.step_time_ms)          # estimated step time (ms)
-print(report.mfu)                   # model FLOPs utilization
-print(report.peak_memory_gb)        # peak per-GPU memory (binding PP stage)
+# 2) estimate_memory — per-GPU peak memory only (skips step-time estimation)
+mem = syssim.estimate_memory(
+    model=MODEL, hardware=HW,
+    parallelism=syssim.ParallelismConfig(tp=2, dp=4),
+    training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
+)
+print(mem.peak_memory_gb, mem.pp_stage_memory_gb)       # per-GPU peak, per-PP-stage
+
+# 3) sweep — search a config axis, pick the best by a metric
+result = syssim.sweep(
+    model=MODEL, hardware=HW,
+    parallelism=syssim.ParallelismConfig(dp=4),
+    training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
+    over={"parallelism.tp": [1, 2, 4]},
+)
+best = result.best("mfu")
+print(best.inputs, best.metrics)
 ```
 
 ### Simulate from the command line
@@ -68,7 +78,7 @@ syssim run examples/configs/models/qwen3-1_7b.yaml \
     --hardware examples/configs/hardware/dgx_h100.yaml \
     --tp 2 --dp 4 --micro-batch 1 --global-batch 8
 
-# Fast memory-only estimate (no tracing, ~1 ms)
+# Memory only — peak memory without step-time estimation
 syssim memory examples/configs/models/qwen3-1_7b.yaml \
     --hardware examples/configs/hardware/dgx_h100.yaml \
     --micro-batch 1 --global-batch 8
@@ -137,54 +147,31 @@ The number of nodes is derived from `world_size / gpus_per_node`. Bandwidth fiel
 
 | Field | Meaning |
 |---|---|
-| `step_time_ms` | Wall-clock step time (critical path through the stream-queue DES) |
+| `step_time_ms` | Estimated wall-clock step time |
 | `forward_ms` / `backward_ms` / `optimizer_ms` | Time attributed per training phase |
 | `collective_total_ms` / `collective_exposed_ms` | Total vs. non-overlapped collective time |
 | `achieved_tflops`, `mfu`, `hfu` | Throughput and model/hardware FLOPs utilization |
-| `peak_memory_gb` | Peak per-GPU memory at the binding (max) PP stage |
+| `peak_memory_gb` | Peak per-GPU memory (heaviest pipeline stage) |
 | `pp_stage_memory_gb` | Per-pipeline-stage peak memory (one entry per stage) |
 | `per_pp_rank_step_time_ms` | Per-stage finish time |
 | `bottlenecks` | Top ops by time, dominant op type, longest collective, binding PP stage, peak module, and OOM (capacity / required / excess) when `gpu_memory_GB` is set |
 
-Memory is captured by a dedicated single-microbatch [MemTracker](https://pytorch.org/docs/stable/distributed.tensor.html) pass and decomposed into persistent (parameters, gradients, optimizer state) vs. per-microbatch activations; the activation term is scaled per stage by the **1F1B** in-flight microbatch count, so earlier pipeline stages correctly show higher peaks.
+`peak_memory_gb` is the heaviest pipeline stage; the report also breaks memory down into parameters, gradients, optimizer state, and activations.
 
 ---
 
 ## Parallelism support
 
-| Strategy | Status |
+| Strategy | Supported |
 |---|---|
-| Tensor parallel (TP) | ✅ collectives traced and timed over the network model |
+| Tensor parallel (TP) | ✅ |
 | Sequence parallel (SP) | ✅ |
-| Data parallel (DP) | ✅ gradient all-reduce injected and timed |
+| Data parallel (DP) | ✅ |
 | Context parallel (CP) | ✅ |
-| Pipeline parallel (PP) | ✅ **1F1B schedule** (Megatron default); each stage traced as a separate process (MPMD), composed with timed P2P transfers |
+| Pipeline parallel (PP) | ✅ (1F1B schedule) |
+| Expert parallel (EP) | 🚧 work in progress |
 
-Pipeline memory and runtime follow the **1F1B** schedule only. GPipe / interleaved (VPP) schedules are out of scope.
-
----
-
-## Inspect the operator graph
-
-`syssim.trace(...)` returns a `Trace` whose `.graph` is the operator DAG, useful for debugging or visualization:
-
-```python
-import syssim
-
-t = syssim.trace(
-    model="examples/configs/models/qwen3-1_7b.yaml",
-    parallelism=syssim.ParallelismConfig(tp=2, dp=1),
-    training=syssim.TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"),
-    hardware="examples/configs/hardware/dgx_h100.yaml",
-    gpus_per_node=8,
-)
-
-print(t.graph.summary())                 # op counts + total time by type
-with open("graph.dot", "w") as f:
-    f.write(t.graph.to_dot())             # Graphviz
-
-report = t.simulate_on(syssim.HardwareConfig(...))   # re-time the cached graph on other hardware
-```
+These are combinable (e.g. TP×DP×PP).
 
 ---
 
@@ -192,17 +179,15 @@ report = t.simulate_on(syssim.HardwareConfig(...))   # re-time the cached graph 
 
 ```
 SysSim/
-├── syssim/                  # Main package
-│   ├── tracer.py            # TorchDispatchMode tracing → operator graph
-│   ├── operator_graph.py    # DAG IR (operator types, summary, Graphviz/JSON export)
-│   ├── config.py            # HardwareInfo, SimulatorConfig, hardware auto-detect
-│   ├── cli.py               # `syssim run | memory | summary | sweep`
-│   ├── compute/             # Per-operator time: roofline + ML-efficiency models, FLOP counter
-│   ├── network/             # Flow-level network sim: topologies, collectives, max-min fair solver
-│   └── training/            # Distributed training simulator: configs, parallelism, memory, report
+├── syssim/                  # Core package (tracer, operator-graph IR, config, CLI) + subpackages:
+│   ├── compute/             # Per-operator cost models (pluggable estimators) + FLOP counting
+│   ├── network/             # Network simulation: topologies, collectives, routing
+│   ├── training/            # Distributed training simulator: configs, parallelism, memory, report
+│   └── external/            # Optional isolated integrations (e.g. PLENA custom estimator)
 ├── examples/                # Runnable examples + model/hardware YAML configs
 ├── data/                    # Profiling CSVs and trained efficiency models
 ├── tests/                   # Test suite
+├── third_party/             # Git submodules (e.g. PLENA_Simulator)
 ├── DESIGN.md                # Technical design document
 └── pyproject.toml           # Package metadata
 ```

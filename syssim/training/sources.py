@@ -55,8 +55,8 @@ def resolve_megatron_provider(
             from megatron.bridge import AutoBridge
         except ImportError as e:
             raise ImportError(
-                "HFModel requires `pip install -e '.[huggingface]'` "
-                "(installs transformers + megatron-bridge)."
+                "HFModel requires transformers + megatron-bridge "
+                "(installed by `pip install -e .`)."
             ) from e
         hf_config = AutoConfig.from_pretrained(model.huggingface)
         bridge = AutoBridge.from_hf_config(hf_config)

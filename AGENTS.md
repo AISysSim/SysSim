@@ -1,283 +1,127 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repository. This file applies to the
-whole repo.
+Guidance for coding agents working in this repository. Applies to the whole repo.
+
+## ⚠️ Agent artifacts — keep them OUT of the repo
+
+**Always write agent artifacts (brainstorming notes, design specs, implementation
+plans, scratch analysis, task write-ups) under `agent_space/` — which is
+gitignored. NEVER put them in `docs/`, the repo root, or anywhere else tracked by
+git.** `docs/` is not a dumping ground for agent output; it was removed for exactly
+that reason. Superpowers skill artifacts go under `agent_space/docs/superpowers/`
+(`specs/`, `plans/`). The only human-facing docs that belong in the tree are
+`README.md` (what / how-to-use) and `DESIGN.md` (architecture).
 
 ## Project Overview
 
-SysSim is a Python/PyTorch operator-level performance simulator for neural
-network workloads. It traces PyTorch execution with fake CUDA tensors, builds an
-operator DAG, estimates compute operators with a hybrid roofline + learned
-efficiency model, estimates communication with a LogGP/topology-aware network
-simulator, and reports critical-path timing.
+SysSim is a Python/PyTorch **operator-level performance and memory simulator** for
+distributed LLM training. It traces a model with fake CUDA tensors to build an
+operator DAG, estimates per-operator time through a **pluggable estimator** (GPU
+roofline + learned efficiency by default), times collectives with a **flow-level
+network simulator**, and replays the graph through a stream-queue discrete-event
+simulator to get step time, MFU, and per-GPU peak memory.
 
-Primary package: `syssim/`
+Primary package: `syssim/`. Requires a CUDA-capable GPU (fake tensors still need
+CUDA so PyTorch dispatches GPU kernel variants) and Megatron-Core.
 
-Key public entry points:
+## Public API
 
-- `syssim.trace_model_for_training()`
-- `syssim.trace_model_for_inference()`
-- `syssim.set_efficiency_model_dir()`
-- `syssim.get_hardware_info()`
-- `syssim.network.*` collective builders, topologies, and `simulate()`
-- `syssim.integrations.huggingface.*`
+High-level (config-driven training simulator, `syssim.training`):
+
+- `syssim.simulate(model, hardware, parallelism, training)` → `SimulationReport`
+  (step time, fwd/bwd/optimizer, collective exposed, MFU/HFU, peak memory,
+  per-PP-stage memory, OOM, bottlenecks).
+- `syssim.estimate_memory(...)` → per-GPU peak memory via MemTracker (same memory
+  path as `simulate`, but skips the runtime DES); returns a memory-only `SimulationReport`.
+- `syssim.sweep(..., over={...})` → search a config axis; `.best(metric)`.
+- Configs: `ModelConfig`, `ParallelismConfig`, `TrainingConfig`, `HardwareConfig`;
+  model sources `HFModel` / `CustomModel`.
+- CLI: `syssim run | memory | summary | sweep <model.yaml> --hardware <hw.yaml> ...`.
+
+Low-level: `syssim.OperatorGraphTracer`, `HardwareInfo`, `OperatorGraph`.
+
+Custom estimators (e.g. PLENA accelerator): `from syssim.external.plena import
+PLENAEstimator, PLENAConfig` — attached via `HardwareConfig(estimator=...)`.
+
+## Configuration: two YAML types
+
+- **Model YAML** — architecture only (layers, hidden, heads, ffn, vocab, …).
+- **Hardware YAML** — accelerator peaks + `gpus_per_node` + `gpu_memory_GB` + a
+  `topology:` block (intra/inter-node bandwidth; `type`: simple | arbitrary |
+  two_layer_multipath | fat_tree).
+- Parallelism and training knobs are Python kwargs / CLI flags, **not** YAML.
+  Bandwidth fields use neutral `intra_node_*` / `inter_node_*` names.
 
 ## Repository Map
 
-- `syssim/api.py` - public tracing API.
-- `syssim/config.py` - `HardwareInfo`, `SimulatorConfig`, hardware detection,
-  per-dtype tensor peak fields for FP16/FP8/FP4, and network defaults.
-- `syssim/operator_graph.py` - DAG IR, operator types, critical-path analysis,
-  DOT/JSON export.
-- `syssim/tracer.py` - `TorchDispatchMode` + `FakeTensorMode` tracing, tensor
-  storage dependency tracking, CUDA event tracking, and distributed collective
-  no-op patching.
-- `syssim/compute/compute_cost_predictor.py` - roofline and efficiency-based
-  runtime estimates. Internal compute times are mostly nanoseconds; public
-  estimated times are milliseconds.
-- `syssim/compute/flop_counter.py` - FLOP formula registry used by the roofline
-  estimator.
-- `syssim/compute/efficiency_models.py` - MLP/XGBoost efficiency model loading
-  and inference. Models are keyed by `(operator, dtype)` with FP16 fallback.
-- `syssim/compute/compute_cost_profiler.py` - CUDA profiling and efficiency
-  model training CLI for GEMM, ATTN, RMSNorm, SiLU, and generic math.
-- `syssim/network/` - communication DAGs, collective algorithms, LogGP params,
-  topologies, event-driven simulator, protocol detection, NCCL profiler, and
-  device mesh support.
-- `syssim/integrations/huggingface.py` - wrappers around the core tracer for
-  Transformers models.
-- `examples/` - runnable examples for tracing, Pro 6000 profiling/model
-  training, Hugging Face, Megatron-Core, and hierarchy configs.
-- `data/profiling/` - tracked profiling CSVs.
-- `data/network_models/` - intended output location for generated LogGP JSON
-  models; currently only keeps a `.gitignore`.
-- `tests/` - pytest suite covering tracing, compute modeling, network
-  simulation/profiling, device mesh, low precision, and integrations.
-- `DESIGN.md` - best architecture reference.
-
-## Current Checkout Notes
-
-Some README references describe files or paths that are not present in this
-checkout. Prefer the real files over the README when they disagree.
-
-- There is no `pyproject.toml`, `setup.py`, `setup.cfg`, `LICENSE`,
-  `CONTRIBUTING.md`, or `run_profiling.sh` in this checkout.
-- Use `syssim.compute.compute_cost_profiler`, not
-  `syssim.predictors.compute_cost_profiler`.
-- `data/trained_models/` is gitignored and may be absent. It is generated by
-  training efficiency models.
-- The active model directory environment variable is `RLSYSIM_MODEL_DIR`.
-- FP4 efficiency routing is opt-in with `SYSSIM_FORCE_DTYPE=fp4`, because
-  FlashInfer NVFP4 outputs are byte-packed.
-- `tests/test_huggingface_structure.py` currently references
-  `_ensure_cuda_inputs`, but `syssim/integrations/huggingface.py` does not
-  define it in this checkout. Expect that specific structural test to fail
-  until the code or test is reconciled.
-
-## Setup
-
-Use Python 3.10+ and a CUDA-enabled PyTorch build for tracing/profiling work.
-The package has no install metadata in this checkout, so run from the repo root
-with `PYTHONPATH=.`.
-
-Typical environment:
-
-```bash
-python3.10 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -r requirements.txt
-```
-
-If using conda or an existing CUDA environment, installing `requirements.txt`
-after the right PyTorch wheel is still the safest path.
-
-## Test And Verification Commands
-
-Always run from the repository root.
-
-Syntax check:
-
-```bash
-python -m compileall -q syssim tests examples
-```
-
-CPU-friendly tests, assuming dependencies are installed:
-
-```bash
-PYTHONPATH=. python -m pytest \
-  tests/test_device_mesh.py \
-  tests/test_unit_consistency.py \
-  tests/test_network_collectives.py \
-  tests/test_network_topology.py \
-  tests/test_network_dag_builder.py \
-  tests/test_network_simulator.py \
-  tests/test_network_validation.py \
-  tests/test_network_integration.py \
-  tests/test_network_profiling_e2e.py \
-  tests/test_protocol_detector.py \
-  tests/test_mesh_config_loading.py \
-  tests/test_efficiency_models.py \
-  tests/test_flop_bug_fix.py \
-  tests/test_roofline_improvements.py
-```
-
-CUDA tracing tests:
-
-```bash
-PYTHONPATH=. python -m pytest tests/test_tracing.py
-```
-
-Low-precision profiler smoke tests:
-
-```bash
-PYTHONPATH=. python -m pytest tests/test_low_precision_profiling.py
-```
-
-Hugging Face tests require `transformers`, network access or cached model files
-for GPT-2 fixtures, and CUDA for integration tests:
-
-```bash
-PYTHONPATH=. python -m pytest tests/test_huggingface_structure.py
-PYTHONPATH=. python -m pytest tests/test_huggingface_integration.py
-```
-
-NCCL backend tests require at least two CUDA GPUs and a distributed launcher:
-
-```bash
-torchrun --nproc_per_node=2 -m pytest tests/test_nccl_backend.py
-```
+- `syssim/` — core package (tracer, operator-graph IR, config, CLI) + subpackages:
+  - `compute/` — per-operator cost: pluggable estimators (roofline default) + FLOP counting.
+  - `network/` — flow-level network sim: topologies, collectives, max-min fair solver, ECMP load balancer.
+  - `training/` — distributed training simulator: spec/configs, parallelism (incl. PP composition), memory (MemTracker), runtime DES, report.
+  - `external/` — optional isolated integrations (e.g. `plena/` custom estimator). Core never imports `external/`.
+- `examples/` — runnable examples + `configs/{models,hardware}/*.yaml`.
+- `tests/` — pytest suite.
+- `third_party/` — git submodules (e.g. `PLENA_Simulator`).
+- `agent_space/` — gitignored agent workspace (see top of this file).
+- `DESIGN.md` — architecture reference. `pyproject.toml` — package metadata.
 
 ## Architecture Rules To Preserve
 
 Tracing:
+- The tracer requires CUDA even with fake tensors (PyTorch needs fake CUDA tensors
+  to dispatch GPU kernel variants). It mutates params/buffers to fake tensors and
+  must restore the model afterward. View ops aren't nodes (propagate storage
+  aliases); creation ops are zero-time nodes. Real collectives must not run on fake
+  tensors — they are patched to no-ops during tracing.
 
-- The tracer intentionally requires CUDA availability even though it uses fake
-  tensors. PyTorch needs fake CUDA tensors to dispatch to GPU-relevant kernels.
-- The tracer mutates module parameters/buffers to fake tensors and must restore
-  the original model afterward.
-- View ops should not become graph nodes; they should propagate storage aliases.
-- Creation ops are zero-time nodes so downstream dependencies can be tracked.
-- Real distributed collectives should not run on fake tensors. The tracer
-  patches `torch.distributed` collectives to no-ops during tracing and returns a
-  mock async handle where needed.
+Estimation (pluggable, transparent):
+- The **tracer and the simulator are transparent to the estimator**. The tracer's
+  only estimation touchpoint is `compute_cost_predictor.estimate_runtime(...,
+  hw_info, ...)`, which delegates to `hw_info.build_estimator().estimate_op(...)`.
+  Do NOT make the tracer or DES reference an estimator type.
+- Estimator selection lives on `hw_info` (`HardwareInfo.estimator`, default →
+  `RooflineEstimator`). No `estimator=` kwarg on `simulate`/`trace`/the tracer.
+- New backends implement the `Estimator` protocol (`syssim/compute/estimator.py`)
+  and live under `syssim/external/`; core must not import them.
+- Keep units explicit: peaks in TFLOP/s, bandwidth in GB/s, roofline internals ns,
+  public op estimates ms.
 
-Compute modeling:
+Network:
+- Collectives are decomposed into point-to-point `Op`s; topology + timing live in
+  `simulate(ops, topology)`. The simulator re-solves **max-min fair** rates over
+  the active flow set per event; per-rank contention is implicit via shared links.
 
-- Keep units explicit. Hardware FLOP rates are TFLOP/s, memory bandwidth is
-  GB/s, roofline internals use ns, and public operator estimates are ms.
-- Use constants in `compute_cost_predictor.py` instead of magic unit factors.
-- Add or change FLOP formulas in `flop_counter.py`, then cover them with unit
-  tests.
-- `estimate_runtime()` should fall back gracefully to roofline-only behavior
-  when no efficiency model is available.
-- Efficiency predictions must stay in `(0, 1]`; tests enforce bounded
-  predictions and no >100% efficiency in generated data.
-- Large GEMM/ATTN peak selection is size-aware; avoid regressing the
-  conservative small-op path.
+Training simulator:
+- Two YAML types only (model + hardware); parallelism/training are kwargs.
+- PP runs each stage as a separate process (MPMD) composed with timed P2P; the
+  schedule is **1F1B** only. Per-stage peak memory = single-microbatch footprint
+  (MemTracker) scaled by the 1F1B in-flight count; earlier stages hold more.
+- `HardwareConfig.topology` is required for the training path.
 
-Low precision:
-
-- FP8/FP4 support is currently focused on Pro 6000/Blackwell profiling.
-- FP8 uses PyTorch float8 dtypes where possible.
-- FP4 uses the `"nvfp4"` sentinel or `SYSSIM_FORCE_DTYPE=fp4` for routing,
-  because there is no true torch FP4 dtype.
-- RMSNorm, SiLU, and generic math are profiled as FP16 only.
-
-Network simulation:
-
-- Collective builders create communication patterns; topology and LogGP timing
-  belong in `simulate()`.
-- `build_dag()` intentionally infers only receive-before-send and sender
-  serialization dependencies. Receive-side contention is handled by the
-  simulator's bandwidth sharing.
-- The simulator uses seconds for network timing and max-min fair sharing across
-  topology resources.
-- `Resource` objects are directional and immutable.
-- New topologies should implement `resolve_path()` and `all_resources()`, and
-  optionally `get_loggp()` / `get_bandwidth()`.
-- Hierarchical profiling configs are mesh-based only. Do not reintroduce
-  explicit rank-list config formats.
-
-## Common Change Patterns
-
-Adding hardware:
-
-1. Update `get_hardware_info()` in `syssim/config.py`.
-2. Include FP8/FP4 peaks only when the hardware supports them.
-3. Add/adjust tests in `tests/test_pro6000_hw_detect.py` or a new hardware test.
-
-Adding an operator class or better classification:
-
-1. Update `OperatorType` only if a genuinely new category is needed.
-2. Update `_classify_op()` in `syssim/tracer.py`.
-3. Add FLOP support in `flop_counter.py` if the op needs compute roofline time.
-4. Update runtime estimation and feature extraction as needed.
-5. Add targeted tests in `tests/test_tracing.py` and compute-model tests.
-
-Changing efficiency model training:
-
-1. Keep CSV profiling data model-agnostic where possible.
-2. Recompute roofline/efficiency features during training when missing.
-3. Preserve canonical model filenames:
-   `{operator}_{hardware}_{dtype}_xgb.pth` or
-   `{operator}_{hardware}_{dtype}_mlp.pth`.
-4. Do not commit generated `.pth` files unless explicitly requested and
-   `.gitignore` is intentionally changed.
-
-Changing network collectives:
-
-1. Update the builder in `syssim/network/collectives.py`.
-2. Add structural tests in `tests/test_network_collectives.py`.
-3. Add simulation or validation coverage if timing/makespan expectations change.
-
-## Examples
-
-Trace diverse operators:
+## Setup
 
 ```bash
-PYTHONPATH=. python examples/trace_and_print.py
+pip install -e .
 ```
 
-Profile a reduced Pro 6000 grid:
+CUDA-enabled PyTorch (≥2.6) and Megatron-Core are required for tracing/simulation.
+
+## Test Commands
 
 ```bash
-PYTHONPATH=. python examples/profile_pro6000.py --num-runs 20
+python -m pytest tests/ -q                 # full suite
+python -m pytest tests/compute -q          # estimator unit tests (no GPU/megatron)
 ```
 
-Train Pro 6000 XGBoost models from tracked profiling CSVs:
-
-```bash
-PYTHONPATH=. python examples/train_pro6000_models.py
-```
-
-Use trained efficiency models in tracing:
-
-```bash
-RLSYSIM_MODEL_DIR=data/trained_models PYTHONPATH=. python examples/trace_and_print.py
-```
-
-Profile a single network layer:
-
-```bash
-torchrun --nproc_per_node=2 -m syssim.network.profiler --topology nvlink
-```
-
-Profile a mesh-based hierarchy:
-
-```bash
-torchrun --nproc_per_node=4 --nnodes=4 \
-  -m syssim.network.profiler \
-  --hierarchy-config examples/configs/perlmutter_mesh.json
-```
+Integration tests (`tests/training`, `tests/external/plena`) need Megatron-Core +
+CUDA and skip cleanly when unavailable (PLENA tests need the `third_party/
+PLENA_Simulator` submodule: `git submodule update --init`).
 
 ## Style And Maintenance
 
-- Match the existing dataclass-heavy, explicit-type Python style.
-- Prefer small, local changes with focused tests.
-- Keep comments useful and technical; avoid restating obvious code.
-- Keep generated profiling outputs, trained models, logs, and caches out of
-  commits unless the task explicitly asks for them.
-- When docs and code disagree, verify against the code and update docs in the
-  same change if the mismatch affects users.
+- Match the existing dataclass-heavy, explicit-type Python style; small focused
+  changes with focused tests.
+- Never reference external projects by name in source (identifiers, docstrings,
+  comments, commit messages) — citations belong only in `agent_space/` design docs.
+- Keep generated profiling outputs, trained models, logs, and caches out of commits
+  unless explicitly requested.
