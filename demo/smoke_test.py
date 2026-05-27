@@ -52,6 +52,7 @@ def test_mi300x_yaml_loads():
 
 
 import csv
+import os
 import tempfile
 
 
@@ -157,3 +158,183 @@ def test_simulated_hardware_restores_on_exception():
         with helpers.simulated_hardware("x", MI300X_PEAKS):
             raise ValueError("intentional")
     assert sc.get_hardware_info is orig
+
+
+# ---------------------------------------------------------------------------
+# CUDA-gated integration tests (skipped on Mac; run in Colab)
+# ---------------------------------------------------------------------------
+
+try:
+    import torch
+    HAS_CUDA = torch.cuda.is_available()
+except ImportError:
+    HAS_CUDA = False
+
+requires_cuda = pytest.mark.skipif(not HAS_CUDA, reason="requires CUDA (run in Colab)")
+
+QWEN3_8B_YAML = REPO_ROOT / "examples" / "configs" / "models" / "qwen3-8b.yaml"
+DGX_H100_YAML = REPO_ROOT / "examples" / "configs" / "hardware" / "dgx_h100.yaml"
+
+H100_FP8_PEAKS = {
+    "peak_tflops_mm": 1979.0,
+    "peak_tflops_math": 989.0,
+    "peak_memory_bandwidth_gbps": 3350.0,
+    "peak_tflops_mm_fp8": 3958.0,
+    "peak_tflops_mm_fp4": None,
+}
+
+
+@requires_cuda
+def test_simulate_qwen3_8b_on_h100():
+    """§1 smoke: simulate Qwen3-8B on H100."""
+    import syssim
+    r = syssim.simulate(
+        model=str(QWEN3_8B_YAML),
+        hardware=str(DGX_H100_YAML),
+        parallelism=syssim.ParallelismConfig(tp=2, dp=4),
+        training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
+    )
+    assert r.step_time_ms > 0
+    assert 0 < r.mfu < 1
+    assert r.peak_memory_gb > 0
+
+
+@requires_cuda
+def test_simulate_llama3_8b_on_h100():
+    """§1 smoke: simulate Llama-3-8B on H100 (validates demo/configs/models/llama3-8b.yaml end-to-end)."""
+    import syssim
+    r = syssim.simulate(
+        model=str(LLAMA_YAML),
+        hardware=str(DGX_H100_YAML),
+        parallelism=syssim.ParallelismConfig(tp=2, dp=4),
+        training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
+    )
+    assert r.step_time_ms > 0
+
+
+@requires_cuda
+def test_simulate_mi300x_roofline():
+    """§3a smoke: simulate on MI300X with default (no efficiency model) — pure roofline."""
+    import syssim
+    r = syssim.simulate(
+        model=str(QWEN3_8B_YAML),
+        hardware=str(MI300X_YAML),
+        parallelism=syssim.ParallelismConfig(tp=8),
+        training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
+    )
+    assert r.step_time_ms > 0
+
+
+@requires_cuda
+def test_train_mi300x_predictor_and_swap():
+    """§3c smoke: synth MI300X data → train predictors → set dir → simulate."""
+    import syssim
+    from syssim.compute.compute_cost_profiler import train_efficiency_model
+    from syssim.api import set_efficiency_model_dir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        prof_dir = tmp / "profiling"
+        prof_dir.mkdir()
+        model_dir = tmp / "models"
+        model_dir.mkdir()
+
+        gemm_csv = helpers.synthesize_gemm_csv(prof_dir / "gemm.csv", 1307, 5300, 2)
+        attn_csv = helpers.synthesize_attn_csv(prof_dir / "attn.csv", 1307, 5300, 2)
+        rms_csv = helpers.synthesize_rmsnorm_csv(prof_dir / "rms.csv", 5300, 2)
+
+        with helpers.simulated_hardware("mi300x", MI300X_PEAKS) as (_, hw_name):
+            # Train ONE predictor per operator
+            train_efficiency_model(
+                "gemm", gemm_csv,
+                str(model_dir / f"gemm_{hw_name}_fp16_xgb.pth"),
+                backend="xgboost", dtype="fp16",
+            )
+            train_efficiency_model(
+                "attn", attn_csv,
+                str(model_dir / f"attn_{hw_name}_fp16_xgb.pth"),
+                backend="xgboost", dtype="fp16",
+            )
+            train_efficiency_model(
+                "rmsnorm", rms_csv,
+                str(model_dir / f"rmsnorm_{hw_name}_fp16_xgb.pth"),
+                backend="xgboost", dtype="fp16",
+            )
+            set_efficiency_model_dir(str(model_dir))
+
+            r = syssim.simulate(
+                model=str(QWEN3_8B_YAML),
+                hardware=str(MI300X_YAML),
+                parallelism=syssim.ParallelismConfig(tp=8),
+                training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
+            )
+            assert r.step_time_ms > 0
+
+        # Reset predictor outside context
+        set_efficiency_model_dir("")
+
+
+@requires_cuda
+def test_train_h100_fp8_predictor_and_swap():
+    """§4c smoke: same as above but for H100 FP8."""
+    import syssim
+    from syssim.compute.compute_cost_profiler import train_efficiency_model
+    from syssim.api import set_efficiency_model_dir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        prof_dir = tmp / "profiling"
+        prof_dir.mkdir()
+        model_dir = tmp / "models"
+        model_dir.mkdir()
+
+        gemm_csv = helpers.synthesize_gemm_csv(prof_dir / "gemm.csv", 3958, 3350, 1)
+        attn_csv = helpers.synthesize_attn_csv(prof_dir / "attn.csv", 3958, 3350, 1)
+        rms_csv = helpers.synthesize_rmsnorm_csv(prof_dir / "rms.csv", 3350, 1)
+
+        with helpers.simulated_hardware("h100", H100_FP8_PEAKS) as (_, hw_name):
+            train_efficiency_model(
+                "gemm", gemm_csv,
+                str(model_dir / f"gemm_{hw_name}_fp8_xgb.pth"),
+                backend="xgboost", dtype="fp8",
+            )
+            train_efficiency_model(
+                "attn", attn_csv,
+                str(model_dir / f"attn_{hw_name}_fp8_xgb.pth"),
+                backend="xgboost", dtype="fp8",
+            )
+            train_efficiency_model(
+                "rmsnorm", rms_csv,
+                str(model_dir / f"rmsnorm_{hw_name}_fp8_xgb.pth"),
+                backend="xgboost", dtype="fp8",
+            )
+            set_efficiency_model_dir(str(model_dir))
+            os.environ["SYSSIM_FORCE_DTYPE"] = "fp8"
+            try:
+                r = syssim.simulate(
+                    model=str(QWEN3_8B_YAML),
+                    hardware=str(DGX_H100_YAML),
+                    parallelism=syssim.ParallelismConfig(tp=2, dp=4),
+                    training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="fp8"),
+                )
+                assert r.step_time_ms > 0
+            finally:
+                del os.environ["SYSSIM_FORCE_DTYPE"]
+        set_efficiency_model_dir("")
+
+
+@requires_cuda
+def test_constant_estimator_in_simulate():
+    """§5 smoke: plug ConstantEstimator into HardwareConfig, simulate."""
+    import syssim
+    from syssim.training.spec import load_hardware_yaml
+
+    hw = load_hardware_yaml(str(DGX_H100_YAML))
+    hw.estimator = helpers.ConstantEstimator(constant_ms=1.0)
+    r = syssim.simulate(
+        model=str(QWEN3_8B_YAML),
+        hardware=hw,
+        parallelism=syssim.ParallelismConfig(tp=2, dp=4),
+        training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
+    )
+    assert r.step_time_ms > 0
