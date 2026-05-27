@@ -103,3 +103,16 @@ def test_synthesize_gemm_csv_seed_reproducible():
         a = helpers.synthesize_gemm_csv(Path(tmp) / "a.csv", 1307, 5300, 2, seed=42)
         b = helpers.synthesize_gemm_csv(Path(tmp) / "b.csv", 1307, 5300, 2, seed=42)
         assert a.read_text() == b.read_text()
+
+
+def test_constant_estimator_protocol():
+    from syssim.compute.estimator import Estimator
+    est = helpers.ConstantEstimator(constant_ms=1.0)
+    assert isinstance(est, Estimator)
+    assert est.estimate_op(None, (), {}, None, None) == 1.0
+    assert est.estimate_op("anything", (1, 2), {"a": 3}, None, None) == 1.0
+
+
+def test_constant_estimator_custom_value():
+    est = helpers.ConstantEstimator(constant_ms=2.5)
+    assert est.estimate_op(None, (), {}, None, None) == 2.5

@@ -107,3 +107,28 @@ def synthesize_rmsnorm_csv(out_path: Path, peak_bw_GBps: float, dtype_bytes: int
             efficiency = 0.55 + 0.25 * rng.random()
             w.writerow([seq, dim, f"{t_roof / efficiency:.6f}"])
     return out_path
+
+
+class ConstantEstimator:
+    """Toy custom Estimator that returns a constant ms per operator.
+
+    Implements syssim.compute.estimator.Estimator (Protocol). Used in §5
+    of the notebook to demonstrate the estimator swap mechanism. The hook
+    is HardwareConfig.estimator (see syssim/training/spec.py:203 and
+    syssim/training/runner.py:374).
+
+    Example:
+        from syssim.training.spec import load_hardware_yaml
+        hw = load_hardware_yaml("examples/configs/hardware/dgx_h100.yaml")
+        hw.estimator = ConstantEstimator(constant_ms=1.0)
+        report = syssim.simulate(model=..., hardware=hw, ...)
+    """
+
+    def __init__(self, constant_ms: float = 1.0):
+        self.constant_ms = constant_ms
+
+    def estimate_op(
+        self, func_packet, args, kwargs, out, op_type,
+        execution_mode=None, cache_seq_len: int = 0,
+    ) -> float:
+        return self.constant_ms
