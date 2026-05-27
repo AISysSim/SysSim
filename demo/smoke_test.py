@@ -49,3 +49,57 @@ def test_mi300x_yaml_loads():
     assert hw.peak_memory_bandwidth_GBps == 5300   # HBM3 bandwidth
     assert hw.gpu_memory_GB == 192
     assert hw.gpus_per_node == 8
+
+
+import csv
+import tempfile
+
+
+def _read_csv(path):
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        return reader.fieldnames, rows
+
+
+def test_synthesize_gemm_csv_schema():
+    with tempfile.TemporaryDirectory() as tmp:
+        out = helpers.synthesize_gemm_csv(
+            out_path=Path(tmp) / "gemm.csv",
+            peak_tflops=1307, peak_bw_GBps=5300, dtype_bytes=2, seed=42,
+        )
+        fields, rows = _read_csv(out)
+        assert fields == ["M", "N", "K", "t_measured_ms"]
+        assert len(rows) >= 100
+        for r in rows[:5]:
+            assert float(r["t_measured_ms"]) > 0
+            assert int(r["M"]) > 0 and int(r["N"]) > 0 and int(r["K"]) > 0
+
+
+def test_synthesize_attn_csv_schema():
+    with tempfile.TemporaryDirectory() as tmp:
+        out = helpers.synthesize_attn_csv(
+            out_path=Path(tmp) / "attn.csv",
+            peak_tflops=1307, peak_bw_GBps=5300, dtype_bytes=2, seed=42,
+        )
+        fields, rows = _read_csv(out)
+        assert fields == ["bs", "seq", "nh", "nkv", "hd", "t_measured_ms"]
+        assert len(rows) >= 50
+
+
+def test_synthesize_rmsnorm_csv_schema():
+    with tempfile.TemporaryDirectory() as tmp:
+        out = helpers.synthesize_rmsnorm_csv(
+            out_path=Path(tmp) / "rmsnorm.csv",
+            peak_bw_GBps=5300, dtype_bytes=2, seed=42,
+        )
+        fields, rows = _read_csv(out)
+        assert fields == ["seq", "dim", "t_measured_ms"]
+        assert len(rows) >= 30
+
+
+def test_synthesize_gemm_csv_seed_reproducible():
+    with tempfile.TemporaryDirectory() as tmp:
+        a = helpers.synthesize_gemm_csv(Path(tmp) / "a.csv", 1307, 5300, 2, seed=42)
+        b = helpers.synthesize_gemm_csv(Path(tmp) / "b.csv", 1307, 5300, 2, seed=42)
+        assert a.read_text() == b.read_text()
