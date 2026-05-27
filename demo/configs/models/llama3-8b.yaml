@@ -1,0 +1,15 @@
+# Llama-3-8B architecture
+# Source: Meta's published config (huggingface.co/meta-llama/Meta-Llama-3-8B/blob/main/config.json)
+num_layers: 32
+hidden_size: 4096
+num_attention_heads: 32
+num_query_groups: 8           # GQA: 32 Q heads, 8 KV heads
+ffn_hidden_size: 14336
+seq_length: 8192
+max_position_embeddings: 8192
+vocab_size: 128256
+swiglu: true
+rope: true
+rope_theta: 500000.0
+tie_word_embeddings: false
+rms_norm_eps: 1.0e-5
