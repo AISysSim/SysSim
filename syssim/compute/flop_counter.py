@@ -1,5 +1,9 @@
 # mypy: allow-untyped-defs
-from types import NoneType
+try:
+    from types import NoneType
+except ImportError:
+    # Python < 3.10 compatibility
+    NoneType = type(None)
 import logging
 import torch
 from torch.utils._pytree import tree_map, tree_flatten, tree_unflatten, arg_tree_leaves
@@ -331,7 +335,7 @@ def _unpack_flash_attention_nested_shapes(
     cum_seq_k,
     max_q,
     max_k,
-) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...] | None]]:
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], Optional[tuple[int, ...]]]]:
     """
     Given inputs to a flash_attention_(forward|backward) kernel, this will handle behavior for
     NestedTensor inputs by effectively unbinding the NestedTensor and yielding the shapes for
@@ -383,7 +387,7 @@ def _unpack_efficient_attention_nested_shapes(
     cu_seqlens_k,
     max_seqlen_q,
     max_seqlen_k,
-) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...] | None]]:
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], Optional[tuple[int, ...]]]]:
     """
     Given inputs to a efficient_attention_(forward|backward) kernel, this will handle behavior for
     NestedTensor inputs by effectively unbinding the NestedTensor and yielding the shapes for
@@ -678,15 +682,15 @@ class FlopCounterMode:
 
     def __init__(
             self,
-            mods: torch.nn.Module | list[torch.nn.Module] | None = None,
+            mods: Optional[Any] = None,
             depth: int = 2,
             display: bool = True,
-            custom_mapping: dict[Any, Any] | None = None) -> None:
+            custom_mapping: Optional[dict[Any, Any]] = None) -> None:
         super().__init__()
         self.flop_counts: dict[str, dict[Any, int]] = defaultdict(lambda: defaultdict(int))
         self.depth = depth
         self.display = display
-        self.mode: _FlopCounterMode | None = None
+        self.mode: Optional[_FlopCounterMode] = None
         if custom_mapping is None:
             custom_mapping = {}
         if mods is not None:
