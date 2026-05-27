@@ -36,3 +36,16 @@ def test_llama3_8b_yaml_loads():
     assert cfg.swiglu is True
     assert cfg.rope is True
     assert cfg.tie_word_embeddings is False
+
+
+MI300X_YAML = REPO_ROOT / "demo" / "configs" / "hardware" / "mi300x.yaml"
+
+
+def test_mi300x_yaml_loads():
+    from syssim.training.spec import load_hardware_yaml
+    hw = load_hardware_yaml(str(MI300X_YAML))
+    assert hw.peak_tflops_mm == 1307          # FP16 matrix peak (MI300X spec)
+    assert hw.peak_tflops_mm_fp8 == 2615      # FP8 matrix peak (~2x FP16)
+    assert hw.peak_memory_bandwidth_GBps == 5300   # HBM3 bandwidth
+    assert hw.gpu_memory_GB == 192
+    assert hw.gpus_per_node == 8

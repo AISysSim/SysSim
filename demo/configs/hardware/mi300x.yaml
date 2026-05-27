@@ -1,0 +1,17 @@
+# AMD Instinct MI300X (CDNA3) — 8x GPU OAM platform
+# Source: AMD public spec sheet
+peak_tflops_mm: 1307            # FP16 matrix peak (TFLOP/s)
+peak_tflops_math: 163.4         # FP16 vector peak (TFLOP/s)
+peak_memory_bandwidth_GBps: 5300  # HBM3 peak bandwidth
+peak_tflops_mm_fp8: 2615        # FP8 matrix peak (~2x FP16)
+
+gpus_per_node: 8
+gpu_memory_GB: 192              # HBM3 capacity per GPU
+inter_node_bandwidth_GBps: 400  # 8x 400 Gbps NICs typical (Infiniband NDR)
+inter_node_latency_us: 5
+
+topology:
+  type: simple
+  num_nodes: 1
+  intra_node_bandwidth_GBps: 896  # Infinity Fabric: 7 links x 128 GB/s
+  inter_node_bandwidth_GBps: 400
