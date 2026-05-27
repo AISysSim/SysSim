@@ -40,3 +40,14 @@ def test_build_estimator_returns_custom_when_set():
         peak_memory_bandwidth_gbps=3350.0, estimator=stub,
     )
     assert hw.build_estimator() is stub
+
+
+def test_estimate_runtime_delegates_to_hw_estimator():
+    # The transparent boundary the tracer calls dispatches to hw_info's estimator.
+    from syssim.compute.compute_cost_predictor import estimate_runtime
+    from syssim.operator_graph import OperatorType
+    hw = HardwareInfo(
+        peak_tflops_mm=1979.0, peak_tflops_math=989.0,
+        peak_memory_bandwidth_gbps=3350.0, estimator=_StubEstimator(5.0),
+    )
+    assert estimate_runtime(None, (), {}, None, hw, OperatorType.MATH) == 5.0

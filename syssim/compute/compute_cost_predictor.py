@@ -712,19 +712,8 @@ def estimate_runtime(
     Returns:
         Estimated runtime in milliseconds.
     """
-    # Compute multi-dimensional roofline
-    roofline_result = roofline_estimate(
-        func_packet, args, kwargs, out, hw_info, op_type,
-        execution_mode, cache_seq_len
+    # Transparent boundary: delegate to the estimator resolved from hw_info
+    # (RooflineEstimator by default; custom backends via hw_info.estimator).
+    return hw_info.build_estimator().estimate_op(
+        func_packet, args, kwargs, out, op_type, execution_mode, cache_seq_len
     )
-
-    # Predict efficiency
-    efficiency = efficiency_estimate(
-        func_packet, args, kwargs, out, hw_info, op_type,
-        roofline_result, execution_mode, cache_seq_len
-    )
-
-    # Compute final estimate
-    if efficiency == 0:
-        return 0.0
-    return roofline_result.t_roofline_ms / efficiency

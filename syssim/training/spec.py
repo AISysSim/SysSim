@@ -200,6 +200,7 @@ class HardwareConfig:
     inter_node_bandwidth_GBps: Optional[float] = None
     inter_node_latency_us: float = 0.0
     topology: Optional[dict] = None
+    estimator: Optional[Any] = None   # custom per-op Estimator (Python-only; not from YAML)
 
     def __post_init__(self) -> None:
         for name, val in (

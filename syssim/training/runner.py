@@ -371,6 +371,7 @@ def _trace_rank(spawn_rank: int, model_arg, par_arg, tr_arg, hw_arg, out_path: s
             peak_memory_bandwidth_gbps=hw_arg.peak_memory_bandwidth_GBps,
             peak_tflops_mm_fp8=hw_arg.peak_tflops_mm_fp8,
             peak_tflops_mm_fp4=hw_arg.peak_tflops_mm_fp4,
+            estimator=hw_arg.estimator,
         )
     tracer = OperatorGraphTracer(hw_info=hw_info)
     # Estimate per-microbatch memory first, on the freshly-built model, so the
