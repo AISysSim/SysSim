@@ -132,3 +132,56 @@ class ConstantEstimator:
         execution_mode=None, cache_seq_len: int = 0,
     ) -> float:
         return self.constant_ms
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def simulated_hardware(name: str, peaks: dict):
+    """Override SysSim's auto-detected hardware for the duration of the block.
+
+    SysSim's get_hardware_info() inspects torch.cuda.get_device_name(0) against
+    a hardcoded database (syssim/config.py:200). The Colab T4 isn't in that
+    database, so training a predictor fails. Even on supported runtimes, a
+    predictor trained on synthesized MI300X data ends up saved with the wrong
+    hw_name in its filename (BackendManager looks up files by runtime hw_name).
+
+    This patches get_hardware_info() in both syssim.config AND
+    syssim.compute.compute_cost_profiler (which has a module-local binding
+    from `from ..config import get_hardware_info` at line 35).
+
+    Usage:
+        with simulated_hardware("mi300x", {...}) as (hw, name):
+            train_efficiency_model("gemm", csv, f"models/gemm_{name}_fp16_xgb.pth", ...)
+            set_efficiency_model_dir("models/")
+            report = syssim.simulate(...)   # predictor active inside context
+
+    `peaks` keys (all required except the optional ones):
+        peak_tflops_mm, peak_tflops_math, peak_memory_bandwidth_gbps,
+        peak_tflops_mm_fp8 (optional), peak_tflops_mm_fp4 (optional).
+    """
+    import syssim.config as sc
+    import syssim.compute.compute_cost_profiler as ccp
+    from syssim.config import HardwareInfo
+
+    hw_info = HardwareInfo(
+        peak_tflops_mm=peaks["peak_tflops_mm"],
+        peak_tflops_math=peaks["peak_tflops_math"],
+        peak_memory_bandwidth_gbps=peaks["peak_memory_bandwidth_gbps"],
+        peak_tflops_mm_fp8=peaks.get("peak_tflops_mm_fp8"),
+        peak_tflops_mm_fp4=peaks.get("peak_tflops_mm_fp4"),
+    )
+
+    def _fake_get_hardware_info():
+        return hw_info, name
+
+    orig_sc = sc.get_hardware_info
+    orig_ccp = ccp.get_hardware_info
+    sc.get_hardware_info = _fake_get_hardware_info
+    ccp.get_hardware_info = _fake_get_hardware_info
+    try:
+        yield hw_info, name
+    finally:
+        sc.get_hardware_info = orig_sc
+        ccp.get_hardware_info = orig_ccp

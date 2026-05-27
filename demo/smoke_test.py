@@ -116,3 +116,44 @@ def test_constant_estimator_protocol():
 def test_constant_estimator_custom_value():
     est = helpers.ConstantEstimator(constant_ms=2.5)
     assert est.estimate_op(None, (), {}, None, None) == 2.5
+
+
+MI300X_PEAKS = {
+    "peak_tflops_mm": 1307.0,
+    "peak_tflops_math": 163.4,
+    "peak_memory_bandwidth_gbps": 5300.0,
+    "peak_tflops_mm_fp8": 2615.0,
+    "peak_tflops_mm_fp4": None,
+}
+
+
+def test_simulated_hardware_overrides_get_hardware_info():
+    """Inside the context, syssim.config.get_hardware_info returns our HW."""
+    import syssim.config as sc
+    import syssim.compute.compute_cost_profiler as ccp
+
+    orig_sc = sc.get_hardware_info
+    orig_ccp = ccp.get_hardware_info
+
+    with helpers.simulated_hardware("mi300x_test", MI300X_PEAKS) as (hw, name):
+        assert name == "mi300x_test"
+        assert hw.peak_tflops_mm == 1307.0
+        # Patched in BOTH places — local binding in ccp matters
+        hw_sc, name_sc = sc.get_hardware_info()
+        hw_ccp, name_ccp = ccp.get_hardware_info()
+        assert name_sc == "mi300x_test" and name_ccp == "mi300x_test"
+        assert hw_sc.peak_tflops_mm == 1307.0
+        assert hw_ccp.peak_tflops_mm == 1307.0
+
+    # Restored after exit
+    assert sc.get_hardware_info is orig_sc
+    assert ccp.get_hardware_info is orig_ccp
+
+
+def test_simulated_hardware_restores_on_exception():
+    import syssim.config as sc
+    orig = sc.get_hardware_info
+    with pytest.raises(ValueError, match="intentional"):
+        with helpers.simulated_hardware("x", MI300X_PEAKS):
+            raise ValueError("intentional")
+    assert sc.get_hardware_info is orig
