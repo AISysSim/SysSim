@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 
@@ -113,6 +113,7 @@ class HardwareInfo:
         peak_tflops_mm_fp8: float | None = None,
         peak_tflops_mm_fp4: float | None = None,
         network: Optional[NetworkParams] = None,
+        estimator: Any = None,
     ):
         self.peak_tflops_mm = peak_tflops_mm
         self.peak_tflops_math = peak_tflops_math
@@ -126,6 +127,22 @@ class HardwareInfo:
         self.peak_tflops_mm_fp4 = peak_tflops_mm_fp4
         # Network parameters (for network simulator)
         self.network = network if network is not None else NetworkParams()
+        # Optional custom per-op estimator (Python-only selection). When None,
+        # build_estimator() lazily builds the default RooflineEstimator.
+        self.estimator = estimator
+        self._resolved_estimator: Any = None
+
+    def build_estimator(self):
+        """Return the resolved per-op Estimator (cached).
+
+        Uses the attached `estimator` if set, else the default RooflineEstimator.
+        Imported lazily to avoid an import cycle (estimator.py imports this
+        package's compute helpers).
+        """
+        if self._resolved_estimator is None:
+            from .compute.estimator import RooflineEstimator
+            self._resolved_estimator = self.estimator or RooflineEstimator(self)
+        return self._resolved_estimator
 
     def get_peak_tflops(self, op_type, dtype: torch.dtype, is_large_op: bool = False) -> float:
         """Select peak FLOP/s based on operator type and size.
