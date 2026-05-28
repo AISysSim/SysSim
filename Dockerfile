@@ -38,7 +38,10 @@ RUN pip install --no-cache-dir -c /tmp/torch-constraint.txt ninja packaging setu
 
 # Heavy training / tracer stack. --no-build-isolation so source builds see the
 # ambient NGC torch; sm_90 target so CUDA extensions compile without a build GPU.
-ENV TORCH_CUDA_ARCH_LIST="9.0"
+# MAX_JOBS caps parallel nvcc so the source builds (mamba-ssm/flashinfer) use the
+# node's many cores without OOMing (each nvcc is multi-GB).
+ENV TORCH_CUDA_ARCH_LIST="9.0" \
+    MAX_JOBS=16
 RUN pip install --no-cache-dir --no-build-isolation -c /tmp/torch-constraint.txt \
         transformers \
         megatron-core \
