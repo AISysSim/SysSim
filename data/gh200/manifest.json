@@ -1,0 +1,39 @@
+{
+  "device": "gh200",
+  "schema_version": "1.0.0-gemm",
+  "lightgbm_version": "4.6.0",
+  "sfu_peak": 247.25,
+  "t_launch_ns": {
+    "gemm": 29055.999591946602
+  },
+  "categorical_codes": {
+    "dtype": {
+      "bf16": 0,
+      "fp16": 1,
+      "fp8_e4m3": 2,
+      "fp8_e5m2": 3,
+      "fp32": 4
+    }
+  },
+  "families": {
+    "gemm": "tree"
+  },
+  "feature_columns": {
+    "gemm": [
+      "log_anchor_ns",
+      "log_M",
+      "log_N",
+      "log_K",
+      "M",
+      "N",
+      "K",
+      "dtype"
+    ]
+  },
+  "metrics": {
+    "gemm": {
+      "median_ape": 0.03679069586636025,
+      "mean_signed_log_error": -0.001976540733752589
+    }
+  }
+}

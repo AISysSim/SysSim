@@ -116,6 +116,7 @@ class HardwareInfo:
         peak_tflops_mm_fp4: float | None = None,
         network: Optional[NetworkParams] = None,
         estimator: Any = None,
+        sfu_peak: float | None = None,
     ):
         self.peak_tflops_mm = peak_tflops_mm
         self.peak_tflops_math = peak_tflops_math
@@ -127,6 +128,9 @@ class HardwareInfo:
         # Per-dtype peak tensor-unit throughput (Blackwell+: separate FP8/FP4 peaks)
         self.peak_tflops_mm_fp8 = peak_tflops_mm_fp8
         self.peak_tflops_mm_fp4 = peak_tflops_mm_fp4
+        # Special-function-unit (transcendental) peak in TFLOP/s-equivalent ops/s.
+        # Default: 1/4 of the FMA (math) peak — NVIDIA XU is ~1/4 of FMA throughput.
+        self.sfu_peak = sfu_peak if sfu_peak is not None else peak_tflops_math / 4.0
         # Network parameters (for network simulator)
         self.network = network if network is not None else NetworkParams()
         # Optional custom per-op estimator (Python-only selection). When None,
@@ -212,8 +216,8 @@ def get_hardware_info() -> tuple[HardwareInfo, str]:
     # Format: (pattern, hw_name, peak_mm_fp16, peak_math_fp16, peak_bw, peak_mm_fp8, peak_mm_fp4)
     hw_database = [
         # NVIDIA GH200 (Grace Hopper) - uses H100 GPU specs
-        ("gh200", "gh200", 989.0, 989.0, 3350.0, None, None),
-        ("grace hopper", "gh200", 989.0, 989.0, 3350.0, None, None),
+        ("gh200", "gh200", 1979.0, 989.0, 3350.0, 3958.0, None),
+        ("grace hopper", "gh200", 1979.0, 989.0, 3350.0, 3958.0, None),
 
         # NVIDIA H100
         ("h100", "h100", 1979.0, 989.0, 3350.0, None, None),

@@ -1,0 +1,32 @@
+{
+  "device": "gh200_tiny",
+  "schema_version": "1.0.0-gemm",
+  "lightgbm_version": "4.6.0",
+  "env": {
+    "driver": "test",
+    "cuda": "test",
+    "torch": "test"
+  },
+  "spec_hash": "test",
+  "sfu_peak": 247.25,
+  "t_launch_ns": {
+    "gemm": 5000.0
+  },
+  "categorical_codes": {
+    "dtype": {
+      "bf16": 0,
+      "fp16": 1,
+      "fp8_e4m3": 2,
+      "fp8_e5m2": 3,
+      "fp32": 4
+    }
+  },
+  "families": {
+    "gemm": "tree"
+  },
+  "feature_columns": {
+    "gemm": [
+      "log_anchor_ns"
+    ]
+  }
+}

@@ -34,6 +34,20 @@ def _parser() -> argparse.ArgumentParser:
                        help="path=v1,v2,... (multiple allowed)")
     sweep.add_argument("--metric", default="mfu")
 
+    prof = sub.add_parser("profile")
+    prof.add_argument("--device", required=True)
+    prof.add_argument("--out", required=True)
+    prof.add_argument("--spec", default=None)
+    prof.add_argument("--families", default="gemm")
+    prof.add_argument("--reps", type=int, default=5)
+    prof.add_argument("--dry-run", action="store_true")
+
+    cal = sub.add_parser("calibrate")
+    cal.add_argument("--device", required=True)
+    cal.add_argument("--data", required=True)
+    cal.add_argument("--families", default="gemm")
+    cal.add_argument("--target", choices=["residual", "direct"], default="residual")
+
     return p
 
 
@@ -91,6 +105,42 @@ def main(argv: list[str] | None = None) -> int:
         result = syssim.sweep(**kw, over=over)
         best = result.best(args.metric)
         print(f"best by {args.metric}: {best.inputs} → {best.metrics}")
+        return 0
+    if args.command == "profile":
+        from .profiling.spec import load_profiling_spec, DEFAULT_SPEC_PATH
+        from .profiling.catalog import gemm_worklist
+        spec = load_profiling_spec(args.spec or DEFAULT_SPEC_PATH)
+        wl = gemm_worklist(spec, token_points=[512, 4096])
+        if args.dry_run:
+            print(f"GEMM work-list: {len(wl)} items (dry-run, no kernels)")
+            return 0
+        from .profiling.measure import measure_gemm
+        import os
+        import pandas as pd
+        os.makedirs(os.path.join(args.out, "prof"), exist_ok=True)
+        rows, skipped = [], 0
+        for it in wl:
+            try:
+                rows.append(measure_gemm(it["M"], it["K"], it["N"], it["dtype"],
+                                         reps=args.reps))
+            except Exception:
+                skipped += 1   # e.g. fp8 _scaled_mm alignment constraints
+        pd.DataFrame(rows).to_parquet(os.path.join(args.out, "prof", "gemm.parquet"))
+        print(f"measured {len(rows)} GEMM kernels ({skipped} skipped) "
+              f"-> {args.out}/prof/gemm.parquet")
+        return 0
+    if args.command == "calibrate":
+        from .profiling.calibrate import calibrate_gemm
+        from .config import get_hardware_info
+        # sfu_peak from the device default (gh200 -> H100 default)
+        try:
+            hw, _ = get_hardware_info()
+            sfu = hw.sfu_peak
+        except Exception:
+            sfu = 247.25
+        metrics = calibrate_gemm(data_dir=args.data, device=args.device, sfu_peak=sfu,
+                                 target=args.target)
+        print(f"calibrated gemm: {metrics}")
         return 0
     return 1
 

@@ -194,6 +194,7 @@ class HardwareConfig:
 
     peak_tflops_mm_fp8: Optional[float] = None
     peak_tflops_mm_fp4: Optional[float] = None
+    sfu_peak: Optional[float] = None
 
     gpu_memory_GB: Optional[float] = None
 
@@ -259,7 +260,7 @@ def load_model_yaml(path: str) -> ModelConfig:
 
 _HARDWARE_ALLOWED = frozenset({
     "peak_tflops_mm", "peak_tflops_math", "peak_memory_bandwidth_GBps",
-    "peak_tflops_mm_fp8", "peak_tflops_mm_fp4",
+    "peak_tflops_mm_fp8", "peak_tflops_mm_fp4", "sfu_peak",
     "gpus_per_node",
     "gpu_memory_GB",
     "inter_node_bandwidth_GBps", "inter_node_latency_us",

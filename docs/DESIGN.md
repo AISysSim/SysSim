@@ -103,22 +103,40 @@ class Estimator(Protocol):
   thin delegate: `return hw_info.build_estimator().estimate_op(…)`. Neither the
   tracer nor the discrete-event simulator references an estimator type.
 
-### Default: roofline + learned efficiency (`RooflineEstimator`)
+### Default: multi-pipeline analytical bound (`RooflineEstimator`)
 
 ```
-T_actual = T_roofline / efficiency
+T_an = max(tensor, fma, sfu, mem, launch)        # binding pipeline (ns)
 ```
 
-- **Roofline ceiling:** `T_roofline = max(FLOPs / peak_FLOPs, bytes / peak_bandwidth)`,
-  with size-aware peak selection (large GEMM/ATTN use the tensor-unit peak; small
-  ops use a conservative peak dominated by launch overhead) and per-dtype peaks
-  (FP16/FP8/FP4). FLOPs come from a per-operator formula registry (`flop_counter.py`).
-- **Efficiency `η ∈ (0, 1]`:** an MLP/XGBoost model (`efficiency_models.py`), keyed by
-  `(operator, dtype)`, predicts achieved fraction of the ceiling from shape + roofline
-  features. With no model available it falls back to roofline-only (`η = 1`).
+The default is a **purely analytical** multi-pipeline bound (no learned efficiency): the
+binding demand among Tensor (MMA), FMA (FP32 vector), SFU (transcendentals) and memory,
+plus an optional launch floor. Each demand is blackbox — shapes + the op's math
+definition + device constants: `tensor = MMA_FLOPs / tensor_peak`, `mem = bytes /
+peak_bandwidth`, etc., with size-aware and per-dtype peaks (FP16/FP8/FP4) and FLOPs from
+`flop_counter.py`. This generalises the single-ceiling roofline (which has no SFU term and
+is systematically too fast for softmax/gelu). Lives in `compute/predictor/analytical.py`.
+(In the current GEMM slice `fma`/`sfu` are 0 — GEMM emits no FP32-vector/transcendental
+ops; they populate for the memory-bound families in a follow-up.)
 
-Units are explicit throughout: peaks in TFLOP/s, bandwidth in GB/s, roofline internals
-in nanoseconds, public op estimates in milliseconds.
+Units are explicit: peaks in TFLOP/s, bandwidth in GB/s, internals in nanoseconds, public
+op estimates in milliseconds.
+
+### Learned predictor (`HybridEstimator`, opt-in)
+
+A per-device learned estimator: it multiplies the analytical anchor `T_an` by
+`exp(residual)` from a per-family LightGBM model, clamps to the hardware roofline as an
+out-of-distribution rail, and falls back to the analytical bound on any error (never
+raises). Trained once per device and loaded from a committed bundle:
+
+```python
+from syssim.compute.predictor import HybridEstimator
+hw = HardwareConfig(..., estimator=HybridEstimator.load("data/gh200", hw_info))
+```
+
+The bundle and its raw profiling data live under `data/<device>/` (committed) and are
+produced by `syssim profile` (device-side measurement) + `syssim calibrate` (CPU fit);
+see §10.
 
 ### Custom estimators (`syssim/external/`)
 
@@ -258,5 +276,7 @@ result = syssim.sweep(..., over={"parallelism.tp": [1, 2, 4]})                  
 
 Configs: `ModelConfig`, `ParallelismConfig`, `TrainingConfig`, `HardwareConfig`;
 model sources `HFModel` / `CustomModel`. CLI: `syssim run | memory | summary | sweep
-<model.yaml> --hardware <hw.yaml> …`. The low-level `OperatorGraphTracer` /
+<model.yaml> --hardware <hw.yaml> …`, plus the predictor pipeline `syssim profile`
+(device-side real-kernel measurement on the target GPU) and `syssim calibrate` (CPU model
+fit) writing a bundle under `data/<device>/`. The low-level `OperatorGraphTracer` /
 `OperatorGraph` / `HardwareInfo` remain available for direct graph work.

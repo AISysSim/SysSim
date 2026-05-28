@@ -1,7 +1,11 @@
 """Unit tests for the pluggable estimator interface."""
 
+import torch
+
 from syssim.compute.estimator import Estimator, RooflineEstimator
 from syssim.config import HardwareInfo
+from syssim.operator_graph import OperatorType
+from syssim.compute.predictor.analytical import analytical_bound
 
 
 def _hw():
@@ -51,3 +55,18 @@ def test_estimate_runtime_delegates_to_hw_estimator():
         peak_memory_bandwidth_gbps=3350.0, estimator=_StubEstimator(5.0),
     )
     assert estimate_runtime(None, (), {}, None, hw, OperatorType.MATH) == 5.0
+
+
+def test_roofline_estimator_returns_pure_analytical_bound():
+    aten = torch.ops.aten
+    hw = HardwareInfo(peak_tflops_mm=1979.0, peak_tflops_math=989.0,
+                      peak_memory_bandwidth_gbps=3350.0)
+    a = torch.empty(4096, 4096, dtype=torch.bfloat16, device="cpu")
+    b = torch.empty(4096, 4096, dtype=torch.bfloat16, device="cpu")
+    out = torch.empty(4096, 4096, dtype=torch.bfloat16, device="cpu")
+    est = RooflineEstimator(hw)
+    ms = est.estimate_op(aten.mm, (a, b), {}, out, OperatorType.GEMM)
+    expected_ms = analytical_bound(
+        aten.mm, (a, b), {}, out, hw, OperatorType.GEMM).t_an_ns / 1e6
+    assert ms == expected_ms          # no efficiency divide
+    assert ms > 0

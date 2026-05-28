@@ -92,6 +92,24 @@ syssim sweep examples/configs/models/qwen3-1_7b.yaml \
 
 `run`, `memory`, and `summary` share the same flags: `--tp --dp --cp --sp --micro-batch --global-batch --dtype {fp16,bf16,fp8} --recompute {selective,full} --format {table,json,yaml}`. Pipeline parallelism (`pp`) is available through the Python API (`ParallelismConfig(pp=...)`).
 
+### Learned per-operator predictor (opt-in)
+
+The default estimator is a multi-pipeline analytical bound. A learned residual model
+(`HybridEstimator`) can be trained per device and attached to the hardware object:
+
+```python
+from syssim.compute.predictor import HybridEstimator
+hw = HardwareConfig(..., estimator=HybridEstimator.load("data/gh200", hw_info))
+```
+
+Build a bundle with the device-side measurement sweep then the CPU-side fit (both write
+under `data/<device>/`):
+
+```bash
+syssim profile   --device gh200 --out data/gh200 --families gemm   # real kernels (target GPU)
+syssim calibrate --device gh200 --data data/gh200 --families gemm  # model fit (CPU)
+```
+
 ---
 
 ## Configuration

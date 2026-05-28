@@ -1,0 +1,19 @@
+# Default profiling spec — the architectural space to cover (profiling-time only).
+hidden_sizes:        [2048, 4096, 5120, 8192]
+ffn_hidden_sizes:    [6144, 11008, 14336, 28672]
+num_attention_heads: [16, 32, 64]
+num_query_groups:    [1, 8, 16]
+head_dims:           [64, 128]
+vocab_sizes:         [32000, 151936]
+dtypes:              [bf16, fp16, fp8_e4m3, fp8_e5m2]
+parallelism:
+  tensor_parallel:   [1, 2, 4, 8]
+  sequence_parallel: [false, true]
+token_range:   {min: 1, max: 65536}
+seq_len_range: {min: 128, max: 32768}
+elem_range:    {min: 1024, max: 1073741824}
+sweep:
+  margin_points: 3
+  reps:          5
+  causal:        [true, false]
+  directions:    [fwd, bwd]

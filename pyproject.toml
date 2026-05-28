@@ -13,15 +13,16 @@ authors = [{name = "SysSim Contributors"}]
 
 dependencies = [
     "flashinfer-python>=0.6",
+    "lightgbm",
     "megatron-bridge",
     "megatron-core",
     "numpy",
     "pandas",
+    "pyarrow",
     "pyyaml>=6.0",
     "scikit-learn",
     "torch>=2.6",
     "transformers",
-    "xgboost",
 ]
 
 [tool.pytest.ini_options]
