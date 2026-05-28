@@ -4,13 +4,12 @@ Guidance for coding agents working in this repository. Applies to the whole repo
 
 ## ⚠️ Agent artifacts — keep them OUT of the repo
 
-**Always write agent artifacts (brainstorming notes, design specs, implementation
-plans, scratch analysis, task write-ups) under `agent_space/` — which is
-gitignored. NEVER put them in `docs/`, the repo root, or anywhere else tracked by
-git.** `docs/` is not a dumping ground for agent output; it was removed for exactly
-that reason. Superpowers skill artifacts go under `agent_space/docs/superpowers/`
-(`specs/`, `plans/`). The only human-facing docs that belong in the tree are
-`README.md` (what / how-to-use) and `DESIGN.md` (architecture).
+**Always write agent artifacts (brainstorming notes, scratch analysis, task
+write-ups) under `agent_space/` — which is gitignored. NEVER put them in `docs/`,
+the repo root, or anywhere else tracked by git.** Superpowers skill specs/plans go
+under `agent_space/docs/superpowers/` (`specs/`, `plans/`). The only human-facing
+docs in the tree are `README.md` (what / how-to-use) and `docs/DESIGN.md`
+(architecture) — `docs/` holds curated docs, not agent scratch output.
 
 ## Project Overview
 
@@ -63,7 +62,7 @@ PLENAEstimator, PLENAConfig` — attached via `HardwareConfig(estimator=...)`.
 - `tests/` — pytest suite.
 - `third_party/` — git submodules (e.g. `PLENA_Simulator`).
 - `agent_space/` — gitignored agent workspace (see top of this file).
-- `DESIGN.md` — architecture reference. `pyproject.toml` — package metadata.
+- `docs/DESIGN.md` — architecture reference. `pyproject.toml` — package metadata.
 
 ## Architecture Rules To Preserve
 

@@ -6,7 +6,7 @@
 
 **SysSim** estimates the step time and peak memory of LLM training — on hardware you don't have — without running real computation. It models tensor, sequence, data, and pipeline parallelism and reports step time, MFU, and per-GPU memory (including per-pipeline-stage peaks and OOM).
 
-For in-depth technical architecture, see [DESIGN.md](DESIGN.md).
+For in-depth technical architecture, see [docs/DESIGN.md](docs/DESIGN.md).
 
 **Key use cases:**
 - Estimate training step time and MFU on accelerators you can't access
@@ -188,6 +188,6 @@ SysSim/
 ├── data/                    # Profiling CSVs and trained efficiency models
 ├── tests/                   # Test suite
 ├── third_party/             # Git submodules (e.g. PLENA_Simulator)
-├── DESIGN.md                # Technical design document
+├── docs/                    # DESIGN.md (architecture)
 └── pyproject.toml           # Package metadata
 ```
