@@ -92,22 +92,24 @@ syssim sweep examples/configs/models/qwen3-1_7b.yaml \
 
 `run`, `memory`, and `summary` share the same flags: `--tp --dp --cp --sp --micro-batch --global-batch --dtype {fp16,bf16,fp8} --recompute {selective,full} --format {table,json,yaml}`. Pipeline parallelism (`pp`) is available through the Python API (`ParallelismConfig(pp=...)`).
 
-### Learned per-operator predictor (opt-in)
+### Calibrated per-operator predictor (opt-in)
 
-The default estimator is a multi-pipeline analytical bound. A learned residual model
-(`HybridEstimator`) can be trained per device and attached to the hardware object:
+The default estimator is the **roofline** bound. For higher accuracy, attach a
+**calibrated** estimator (`TreeEstimator`) — the roofline times a learned residual, one
+regularized LightGBM tree per operator family (GEMM, attention, normalization,
+elementwise, reduction), with the bare roofline as the fallback for any uncalibrated op:
 
 ```python
-from syssim.compute.predictor import HybridEstimator
-hw = HardwareConfig(..., estimator=HybridEstimator.load("data/gh200", hw_info))
+from syssim.compute.tree_estimator import TreeEstimator
+hw = HardwareConfig(..., estimator=TreeEstimator.load("data/gh200", hw_info))
 ```
 
-Build a bundle with the device-side measurement sweep then the CPU-side fit (both write
-under `data/<device>/`):
+Build the per-device model — measure real kernels on the target GPU, then fit the trees
+on CPU (both write under `data/<device>/`):
 
 ```bash
-syssim profile   --device gh200 --out data/gh200 --families gemm   # real kernels (target GPU)
-syssim calibrate --device gh200 --data data/gh200 --families gemm  # model fit (CPU)
+syssim profile   --device gh200 --out data/gh200 --num-workers 4   # real kernels (target GPU; all families)
+syssim calibrate --device gh200 --data data/gh200                  # fit trees + gate (CPU; all families)
 ```
 
 ---
@@ -203,7 +205,7 @@ SysSim/
 │   ├── training/            # Distributed training simulator: configs, parallelism, memory, report
 │   └── external/            # Optional isolated integrations (e.g. PLENA custom estimator)
 ├── examples/                # Runnable examples + model/hardware YAML configs
-├── data/                    # Profiling CSVs and trained efficiency models
+├── data/                    # Profiling data + per-device calibrated models
 ├── tests/                   # Test suite
 ├── third_party/             # Git submodules (e.g. PLENA_Simulator)
 ├── docs/                    # DESIGN.md (architecture)

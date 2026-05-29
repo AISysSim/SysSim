@@ -38,7 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     prof.add_argument("--device", required=True)
     prof.add_argument("--out", required=True)
     prof.add_argument("--spec", default=None)
-    prof.add_argument("--families", default="gemm")
+    prof.add_argument("--families", default="all")
     prof.add_argument("--reps", type=int, default=5)
     prof.add_argument("--num-workers", type=int, default=1,
                       help="GPU worker processes (multi-GPU profiling)")
@@ -47,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     cal = sub.add_parser("calibrate")
     cal.add_argument("--device", required=True)
     cal.add_argument("--data", required=True)
-    cal.add_argument("--families", default="gemm")
+    cal.add_argument("--families", default="all")
     cal.add_argument("--target", choices=["residual", "direct"], default="residual")
 
     return p

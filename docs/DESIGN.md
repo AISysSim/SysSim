@@ -29,7 +29,7 @@ model + configs
 1. **Trace** — intercept PyTorch dispatch on fake CUDA tensors → an `OperatorGraph`
    (nodes = operators with shapes; edges = data/stream dependencies).
 2. **Estimate** — fill each node's `estimated_time_ms` via a pluggable estimator
-   (GPU roofline + learned efficiency by default).
+   (the roofline bound by default; an optional per-device calibrated model for accuracy).
 3. **Compose & simulate** — for distributed runs, compose per-stage graphs, inject
    collectives/optimizer, time them over the network model, and replay everything
    through a stream-aware discrete-event simulator to get the critical-path step
@@ -95,48 +95,51 @@ class Estimator(Protocol):
 ```
 
 - **Selection lives on `hw_info`.** `HardwareInfo` carries an optional `estimator`;
-  `hw_info.build_estimator()` returns it, or the default `RooflineEstimator` when
-  unset. There is no `estimator=` argument on the public API — the hardware object
-  is the single source.
+  `hw_info.build_estimator()` returns it, or the default `RooflineEstimator`
+  (`compute/roofline_estimator.py`) when unset. There is no `estimator=` argument on
+  the public API — the hardware object is the single source.
 - **Transparent boundary.** The tracer's only cost touchpoint is the module function
-  `estimate_runtime(func_packet, args, kwargs, out, hw_info, op_type, …)`, which is a
-  thin delegate: `return hw_info.build_estimator().estimate_op(…)`. Neither the
-  tracer nor the discrete-event simulator references an estimator type.
+  `estimate_runtime(...)` in `compute/estimator.py` (alongside the `Estimator`
+  protocol), a thin delegate: `return hw_info.build_estimator().estimate_op(…)`.
+  Neither the tracer nor the discrete-event simulator references an estimator type.
 
-### Default: multi-pipeline analytical bound (`RooflineEstimator`)
+### Default: the roofline bound (`RooflineEstimator`)
 
 ```
-T_an = max(tensor, fma, sfu, mem, launch)        # binding pipeline (ns)
+roofline_ns = max(tensor, fma, sfu, mem, launch)   # the single binding demand (ns)
 ```
 
-The default is a **purely analytical** multi-pipeline bound (no learned efficiency): the
-binding demand among Tensor (MMA), FMA (FP32 vector), SFU (transcendentals) and memory,
-plus an optional launch floor. Each demand is blackbox — shapes + the op's math
-definition + device constants: `tensor = MMA_FLOPs / tensor_peak`, `mem = bytes /
-peak_bandwidth`, etc., with size-aware and per-dtype peaks (FP16/FP8/FP4) and FLOPs from
-`flop_counter.py`. This generalises the single-ceiling roofline (which has no SFU term and
-is systematically too fast for softmax/gelu). Lives in `compute/predictor/analytical.py`.
-(In the current GEMM slice `fma`/`sfu` are 0 — GEMM emits no FP32-vector/transcendental
-ops; they populate for the memory-bound families in a follow-up.)
+The default is the **roofline**: the binding demand among Tensor (MMA), FMA (FP32 vector),
+SFU (transcendentals) and memory, plus an optional kernel-launch floor — collapsed to one
+`roofline_ns`. Each demand is blackbox — shapes + the op's math definition + device
+constants: `tensor = MMA_FLOPs / tensor_peak`, `mem = bytes / peak_bandwidth`, etc., with
+size-aware and per-dtype peaks (FP16/FP8/FP4) and FLOPs from `flop_counter.py`. The
+`fma`/`sfu` terms come from the op's instruction mix (0 for GEMM — pure MMA — and nonzero
+for softmax/gelu/norm), generalising the single-ceiling roofline (which has no SFU term and
+is systematically too fast for those). Lives in `compute/predictor/roofline.py`; the
+`RooflineEstimator` wrapper (`compute/roofline_estimator.py`) just returns `roofline_ns` in ms.
 
 Units are explicit: peaks in TFLOP/s, bandwidth in GB/s, internals in nanoseconds, public
 op estimates in milliseconds.
 
-### Learned predictor (`HybridEstimator`, opt-in)
+### Calibrated predictor (`TreeEstimator`, opt-in)
 
-A per-device learned estimator: it multiplies the analytical anchor `T_an` by
-`exp(residual)` from a per-family LightGBM model, clamps to the hardware roofline as an
-out-of-distribution rail, and falls back to the analytical bound on any error (never
-raises). Trained once per device and loaded from a committed bundle:
+A per-device calibrated estimator: it multiplies the roofline `roofline_ns` by
+`exp(residual)`, where the residual is one regularized LightGBM tree per operator family
+(GEMM, attention, normalization, elementwise, reduction). The result is clamped to
+`roofline_ns` as an out-of-distribution rail — a learned correction never predicts below
+the physical floor, and this is the *same* rail calibration trains against. Any family
+without a tree (or any prediction error) falls back to the bare roofline — it never
+raises. Trained once per device and loaded from the committed per-device model:
 
 ```python
-from syssim.compute.predictor import HybridEstimator
-hw = HardwareConfig(..., estimator=HybridEstimator.load("data/gh200", hw_info))
+from syssim.compute.tree_estimator import TreeEstimator
+hw = HardwareConfig(..., estimator=TreeEstimator.load("data/gh200", hw_info))
 ```
 
-The bundle and its raw profiling data live under `data/<device>/` (committed) and are
-produced by `syssim profile` (device-side measurement) + `syssim calibrate` (CPU fit);
-see §10.
+The trees (`TreeModel`, `compute/predictor/tree_model.py`) and their raw profiling data
+live under `data/<device>/` (committed), produced by `syssim profile` (device-side
+measurement) + `syssim calibrate` (CPU fit); see §10.
 
 ### Custom estimators (`syssim/external/`)
 
@@ -259,9 +262,9 @@ required / excess). `to_json` / `to_dataframe` support sweeps and tabulation;
   follow-up; selection is already centralized on `hw_info`.)
 - **New topology** → add a builder in `network/topology.py` (implement path resolution)
   and a `topology.type` case in `build_topology_from_config`.
-- **New hardware** → supply peaks (incl. per-dtype where supported) and, for the
-  roofline default, train `(operator, dtype)` efficiency models; the analytical
-  ceiling needs no retraining.
+- **New hardware** → supply peaks (incl. per-dtype where supported). The roofline
+  default needs no per-device data; for higher accuracy, train the per-family residual
+  model with `profile` + `calibrate` (§10) — the roofline itself needs no retraining.
 
 ---
 
@@ -277,6 +280,7 @@ result = syssim.sweep(..., over={"parallelism.tp": [1, 2, 4]})                  
 Configs: `ModelConfig`, `ParallelismConfig`, `TrainingConfig`, `HardwareConfig`;
 model sources `HFModel` / `CustomModel`. CLI: `syssim run | memory | summary | sweep
 <model.yaml> --hardware <hw.yaml> …`, plus the predictor pipeline `syssim profile`
-(device-side real-kernel measurement on the target GPU) and `syssim calibrate` (CPU model
-fit) writing a bundle under `data/<device>/`. The low-level `OperatorGraphTracer` /
-`OperatorGraph` / `HardwareInfo` remain available for direct graph work.
+(device-side real-kernel measurement on the target GPU; `--num-workers N` shards the
+sweep across GPUs) and `syssim calibrate` (CPU fit), writing the per-device model under
+`data/<device>/`. The low-level `OperatorGraphTracer` / `OperatorGraph` / `HardwareInfo`
+remain available for direct graph work.
