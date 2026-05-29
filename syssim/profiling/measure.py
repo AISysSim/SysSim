@@ -37,9 +37,9 @@ def _gemm_kernel(a, b, dtype: str):
 def measure_gemm(M: int, K: int, N: int, dtype: str, reps: int = 5,
                  warmup: int = 2, hw_info: Any = None) -> dict[str, Any]:
     """Time one MxKxN GEMM on the current CUDA device (median over reps) AND record
-    the analytical anchor components (tensor_ns, mem_ns) via the SAME analytical_bound
-    code inference uses — guaranteeing the calibrate-time anchor == the inference-time
-    anchor (train/inference parity, spec section 2)."""
+    the roofline anchor components (tensor_ns, mem_ns) via the SAME roofline code
+    inference uses — guaranteeing the calibrate-time anchor == the inference-time
+    anchor (train/inference parity)."""
     dt = _DTYPE[dtype]
     a = torch.randn(M, K, device="cuda").to(dt)
     b = torch.randn(K, N, device="cuda").to(dt)
@@ -53,14 +53,14 @@ def measure_gemm(M: int, K: int, N: int, dtype: str, reps: int = 5,
         torch.cuda.synchronize()
         samples.append(start.elapsed_time(end) * 1e6)   # ms -> ns
 
-    from ..compute.predictor.analytical import analytical_bound
+    from ..compute.predictor.roofline import roofline
     from ..operator_graph import OperatorType
     if hw_info is None:
         from ..config import get_hardware_info
         hw_info, _ = get_hardware_info()
     aten = torch.ops.aten
     out = torch.empty(M, N, dtype=dt, device="cuda")
-    bound = analytical_bound(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
+    bound = roofline(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
     return {"M": M, "K": K, "N": N, "dtype": dtype,
             "latency_ns": median_of_reps(samples, warmup),
             "tensor_ns": bound.tensor_ns, "mem_ns": bound.mem_ns}
@@ -88,13 +88,13 @@ def _time_ns(fn, reps: int = 5, warmup: int = 2, inner: int = 1) -> float:
 
 
 def _anchor(func, args, kwargs, out, hw_info, op_type) -> dict:
-    """Analytical anchor components via the SAME analytical_bound inference uses
+    """Roofline anchor components via the SAME roofline inference uses
     (train/inference parity)."""
-    from ..compute.predictor.analytical import analytical_bound
+    from ..compute.predictor.roofline import roofline
     if hw_info is None:
         from ..config import get_hardware_info
         hw_info, _ = get_hardware_info()
-    b = analytical_bound(func, args, kwargs, out, hw_info, op_type)
+    b = roofline(func, args, kwargs, out, hw_info, op_type)
     return {"tensor_ns": b.tensor_ns, "mem_ns": b.mem_ns,
             "fma_ns": b.fma_ns, "sfu_ns": b.sfu_ns}
 

@@ -28,7 +28,7 @@ from .operator_graph import (
     OperatorNode,
     OperatorGraph,
 )
-from .compute.compute_cost_predictor import (
+from .compute.predictor.roofline import (
     _VIEW_OPS,
     _CREATE_OPS,
     _GEMM_OPS,
@@ -434,7 +434,7 @@ class _OperatorGraphTracerMode(TorchDispatchMode):
         estimated_time_ms = 0.0
         if self._hw_info is not None and func_packet not in _IGNORE_OPS:
             try:
-                from .compute.compute_cost_predictor import estimate_runtime
+                from .compute.estimator import estimate_runtime
                 estimated_time_ms = estimate_runtime(
                     func_packet, args, kwargs, out, self._hw_info, op_type,
                     execution_mode=self._execution_mode,

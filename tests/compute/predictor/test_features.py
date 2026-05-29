@@ -2,7 +2,7 @@ import torch
 
 from syssim.config import HardwareInfo
 from syssim.operator_graph import OperatorType
-from syssim.compute.predictor.analytical import analytical_bound
+from syssim.compute.predictor.roofline import roofline
 from syssim.compute.predictor.router import Family
 from syssim.compute.predictor import features as F
 
@@ -19,7 +19,7 @@ def test_gemm_feature_row_has_universal_and_gemm_columns():
     a = torch.empty(2048, 4096, dtype=torch.bfloat16, device="cpu")
     b = torch.empty(4096, 1024, dtype=torch.bfloat16, device="cpu")
     out = torch.empty(2048, 1024, dtype=torch.bfloat16, device="cpu")
-    bound = analytical_bound(aten.mm, (a, b), {}, out, HW, OperatorType.GEMM)
+    bound = roofline(aten.mm, (a, b), {}, out, HW, OperatorType.GEMM)
     row = F.featurize(aten.mm, (a, b), {}, out, Family.GEMM, bound)
     for col in ("log_tensor_ns", "log_mem_ns", "log_anchor_ns",
                 "arithmetic_intensity", "dtype", "M", "N", "K",

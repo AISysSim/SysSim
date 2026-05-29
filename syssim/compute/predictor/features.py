@@ -10,7 +10,7 @@ from typing import Any
 import torch
 
 from .router import Family
-from .analytical import AnalyticalBound
+from .roofline import Roofline
 
 SCHEMA_VERSION = "1.0.0-gemm"
 
@@ -125,7 +125,7 @@ def _reduction_feats(func_packet, args, out) -> dict:
 
 
 def featurize(func_packet, args, kwargs, out, family: Family,
-              bound: AnalyticalBound) -> dict[str, Any]:
+              bound: Roofline) -> dict[str, Any]:
     """Build the feature row for one operator. GEMM + universal columns (MVP)."""
     flat = [t for t in (out if isinstance(out, (list, tuple)) else [out])
             if isinstance(t, torch.Tensor)]
@@ -142,7 +142,7 @@ def featurize(func_packet, args, kwargs, out, family: Family,
         "log_sfu_ns": _log(bound.sfu_ns),
         "log_mem_ns": _log(bound.mem_ns),
         "log_launch_floor_ns": _log(bound.launch_ns),
-        "log_anchor_ns": _log(bound.t_an_ns),
+        "log_anchor_ns": _log(bound.roofline_ns),
         "arithmetic_intensity": ai,
         "log_bytes_total": _log(bytes_total),
         "working_set_bytes": float(bytes_total),

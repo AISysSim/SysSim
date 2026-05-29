@@ -2,7 +2,7 @@ import torch
 
 from syssim.config import HardwareInfo
 from syssim.operator_graph import OperatorType
-from syssim.compute.predictor.analytical import analytical_bound
+from syssim.compute.predictor.roofline import roofline
 from syssim.compute.predictor.router import Family
 from syssim.compute.predictor import features as F
 
@@ -13,7 +13,7 @@ HW = HardwareInfo(peak_tflops_mm=1979.0, peak_tflops_math=989.0,
 
 def _row(func, args, kwargs, out, family):
     op_type = OperatorType.ATTN if family is Family.ATTENTION else OperatorType.MATH
-    b = analytical_bound(func, args, kwargs, out, HW, op_type)
+    b = roofline(func, args, kwargs, out, HW, op_type)
     return F.featurize(func, args, kwargs, out, family, b)
 
 

@@ -3,7 +3,7 @@ committed profiling parquets, then merge that family's entry into the bundle man
 No GPU.
 
 Features come from the SAME features.featurize used at inference: each parquet row's op
-is reconstructed with meta tensors and an AnalyticalBound rebuilt from the recorded anchor
+is reconstructed with meta tensors and a Roofline rebuilt from the recorded anchor
 components, so train-time and inference-time feature rows are identical (parity). One
 uniform strategy for all families — a residual tree, regularized to the row count, which
 subsumes a near-constant fit for the memory-bound families without overfitting."""
@@ -20,7 +20,7 @@ import torch
 
 from ..compute.predictor import features as F
 from ..compute.predictor.router import Family
-from ..compute.predictor.analytical import AnalyticalBound
+from ..compute.predictor.roofline import Roofline
 
 _DTYPE_CODES = {"bf16": 0, "fp16": 1, "fp8_e4m3": 2, "fp8_e5m2": 3, "fp32": 4}
 _META = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp8_e4m3": torch.float8_e4m3fn,
@@ -84,10 +84,10 @@ def _reconstruct_op(family: str, row: dict):
 
 def _build_features(family: str, df: pd.DataFrame, t_launch: float):
     fam = Family(family)
-    feats, t_ans = [], []
+    feats, anchors = [], []
     for _, r in df.iterrows():
         rd = r.to_dict()
-        bound = AnalyticalBound(
+        bound = Roofline(
             tensor_ns=float(rd.get("tensor_ns", 0.0) or 0.0),
             fma_ns=float(rd.get("fma_ns", 0.0) or 0.0),
             sfu_ns=float(rd.get("sfu_ns", 0.0) or 0.0),
@@ -95,8 +95,8 @@ def _build_features(family: str, df: pd.DataFrame, t_launch: float):
             launch_ns=t_launch)
         func, args, out = _reconstruct_op(family, rd)
         feats.append(F.featurize(func, args, {}, out, fam, bound))
-        t_ans.append(bound.t_an_ns)
-    return feats, np.asarray(t_ans, dtype=float)
+        anchors.append(bound.roofline_ns)
+    return feats, np.asarray(anchors, dtype=float)
 
 
 def _encode(feats: list, cols: list, codes: dict) -> pd.DataFrame:
@@ -122,8 +122,8 @@ def calibrate_family(family: str, *, data_dir: str, device: str, sfu_peak: float
     df = pd.read_parquet(os.path.join(data_dir, "prof", f"{family}.parquet"))
     latency = df["latency_ns"].to_numpy()
     t_launch = float(latency.min())
-    feats, t_an = _build_features(family, df, t_launch)
-    y = np.log(latency) - np.log(np.maximum(t_an, 1e-12))
+    feats, anchor = _build_features(family, df, t_launch)
+    y = np.log(latency) - np.log(np.maximum(anchor, 1e-12))
     cols = F.feature_columns(Family(family))
     codes = _categorical_codes()
     X = _encode(feats, cols, codes)
@@ -151,7 +151,7 @@ def calibrate_family(family: str, *, data_dir: str, device: str, sfu_peak: float
                         callbacks=[lgb.early_stopping(50, verbose=False)])
     booster.save_model(os.path.join(data_dir, f"{family}_model.lgb"))
 
-    pred = np.maximum(t_an[va] * np.exp(booster.predict(X.iloc[va])), t_an[va])  # OOD rail
+    pred = np.maximum(anchor[va] * np.exp(booster.predict(X.iloc[va])), anchor[va])  # OOD rail
     ape = np.abs(pred - latency[va]) / np.maximum(latency[va], 1e-12)
     metrics = {
         "median_ape": float(np.median(ape)),

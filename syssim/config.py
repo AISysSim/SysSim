@@ -146,7 +146,7 @@ class HardwareInfo:
         package's compute helpers).
         """
         if self._resolved_estimator is None:
-            from .compute.estimator import RooflineEstimator
+            from .compute.roofline_estimator import RooflineEstimator
             self._resolved_estimator = self.estimator or RooflineEstimator(self)
         return self._resolved_estimator
 
