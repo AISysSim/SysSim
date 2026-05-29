@@ -4,7 +4,11 @@
   "lightgbm_version": "4.6.0",
   "sfu_peak": 247.25,
   "t_launch_ns": {
-    "gemm": 29055.999591946602
+    "gemm": 29055.999591946602,
+    "attention": 35519.99852061272,
+    "normalization": 9384.31978225708,
+    "elementwise": 3963.1998538970947,
+    "reduction": 4243.519902229309
   },
   "categorical_codes": {
     "dtype": {
@@ -13,27 +17,184 @@
       "fp8_e4m3": 2,
       "fp8_e5m2": 3,
       "fp32": 4
+    },
+    "op_subtype": {
+      "native_layer_norm": 0,
+      "gelu": 1,
+      "silu": 2,
+      "add": 3,
+      "mul": 4,
+      "_softmax": 5,
+      "_log_softmax": 6,
+      "_fused_rms_norm": 7
+    },
+    "variant": {
+      "_scaled_dot_product_flash_attention": 0,
+      "_scaled_dot_product_efficient_attention": 1,
+      "_scaled_dot_product_cudnn_attention": 2
     }
   },
   "families": {
-    "gemm": "tree"
+    "gemm": "tree",
+    "attention": "tree",
+    "normalization": "tree",
+    "elementwise": "tree",
+    "reduction": "tree"
   },
   "feature_columns": {
     "gemm": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
       "log_anchor_ns",
-      "log_M",
-      "log_N",
-      "log_K",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
       "M",
       "N",
       "K",
-      "dtype"
+      "batched_dim",
+      "log_M",
+      "log_N",
+      "log_K",
+      "M_mod_8",
+      "M_mod_16",
+      "M_mod_64",
+      "M_mod_128",
+      "N_mod_8",
+      "N_mod_16",
+      "N_mod_64",
+      "N_mod_128",
+      "K_mod_8",
+      "K_mod_16",
+      "K_mod_64",
+      "K_mod_128"
+    ],
+    "attention": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
+      "log_anchor_ns",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
+      "B",
+      "H_q",
+      "H_kv",
+      "gqa_ratio",
+      "S_q",
+      "S_kv",
+      "D_head",
+      "log_S_q",
+      "log_S_kv",
+      "log_D_head",
+      "is_causal",
+      "variant",
+      "S_q_mod_8",
+      "S_q_mod_16",
+      "S_q_mod_64",
+      "S_q_mod_128",
+      "S_kv_mod_8",
+      "S_kv_mod_16",
+      "S_kv_mod_64",
+      "S_kv_mod_128",
+      "D_head_mod_8",
+      "D_head_mod_16",
+      "D_head_mod_64",
+      "D_head_mod_128"
+    ],
+    "normalization": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
+      "log_anchor_ns",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
+      "outer_dims_product",
+      "norm_dim",
+      "log_outer_dims_product",
+      "log_norm_dim",
+      "op_subtype",
+      "has_weight",
+      "has_bias",
+      "groups"
+    ],
+    "elementwise": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
+      "log_anchor_ns",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
+      "total_elements",
+      "log_total_elements",
+      "num_operands",
+      "op_subtype",
+      "is_inplace"
+    ],
+    "reduction": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
+      "log_anchor_ns",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
+      "input_volume",
+      "reduced_axis_size",
+      "num_non_reduced_elements",
+      "log_input_volume",
+      "op_subtype",
+      "is_causal_softmax"
     ]
   },
   "metrics": {
     "gemm": {
-      "median_ape": 0.03679069586636025,
-      "mean_signed_log_error": -0.001976540733752589
+      "median_ape": 0.03531929168602932,
+      "p95_ape": 0.10970870997416318,
+      "mean_signed_log_error": -0.0007206369488177678
+    },
+    "attention": {
+      "median_ape": 0.016726827521901383,
+      "p95_ape": 0.16327792231213656,
+      "mean_signed_log_error": 0.0043019449007543654
+    },
+    "normalization": {
+      "median_ape": 0.04788017429860408,
+      "p95_ape": 0.10966650435960282,
+      "mean_signed_log_error": -0.0054907148579791554
+    },
+    "elementwise": {
+      "median_ape": 0.025579936070798857,
+      "p95_ape": 0.4690611516738119,
+      "mean_signed_log_error": 0.060131145213898576
+    },
+    "reduction": {
+      "median_ape": 0.008634161063628739,
+      "p95_ape": 0.2046609172451006,
+      "mean_signed_log_error": 0.028420095252621458
     }
   }
 }

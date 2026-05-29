@@ -37,3 +37,13 @@ def test_ignore_op_returns_zero_bound():
     a = torch.empty(8, 8, device="cpu")
     b = analytical_bound(aten.view, (a, [64]), {}, a, HW, OperatorType.MATH)
     assert b.t_an_ns == 0.0
+
+
+def test_softmax_populates_sfu_term():
+    # With the instruction-mix wired, softmax's SFU (transcendental) demand is live
+    # (was hardcoded 0 in the GEMM slice).
+    x = torch.empty(4096, 4096, dtype=torch.float32, device="cpu")
+    b = analytical_bound(aten._softmax, (x, -1, False), {}, x, HW, OperatorType.MATH)
+    assert b.sfu_ns > 0.0
+    assert b.fma_ns >= 0.0
+    assert b.t_an_ns == max(b.tensor_ns, b.fma_ns, b.sfu_ns, b.mem_ns, b.launch_ns)

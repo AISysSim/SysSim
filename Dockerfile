@@ -33,22 +33,21 @@ RUN pip install --no-cache-dir -c /tmp/torch-constraint.txt \
         "pyyaml>=6.0" \
         scikit-learn
 
-# Build tools required by --no-build-isolation source builds (mamba-ssm, flashinfer).
+# Build tools required by --no-build-isolation source builds (mamba-ssm via megatron-bridge).
 RUN pip install --no-cache-dir -c /tmp/torch-constraint.txt ninja packaging setuptools wheel
 
 # Heavy training / tracer stack. --no-build-isolation so source builds see the
 # ambient NGC torch; sm_90 target so CUDA extensions compile without a build GPU.
-# MAX_JOBS caps parallel nvcc so the source builds (mamba-ssm/flashinfer) use the
+# MAX_JOBS caps parallel nvcc so the source build (mamba-ssm) uses the
 # node's many cores without OOMing (each nvcc is multi-GB).
 ENV TORCH_CUDA_ARCH_LIST="9.0" \
     MAX_JOBS=16
 RUN pip install --no-cache-dir --no-build-isolation -c /tmp/torch-constraint.txt \
         transformers \
         megatron-core \
-        megatron-bridge \
-        "flashinfer-python>=0.6"
+        megatron-bridge
 
 # Build-time sanity: torch is still the NGC build and the CPU-safe deps import.
-# (No GPU at build, so megatron/flashinfer CUDA paths are exercised at runtime.)
+# (No GPU at build, so megatron CUDA paths are exercised at runtime.)
 RUN python -c "import torch, pytest, lightgbm, pyarrow, pandas, yaml, sklearn, transformers; \
 print('OK torch', torch.__version__, '| lightgbm', lightgbm.__version__)"

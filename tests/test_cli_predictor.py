@@ -19,7 +19,10 @@ def test_calibrate_subcommand_builds_bundle(tmp_path, capsys):
 
 def test_profile_dry_run_builds_worklist(capsys):
     rc = main(["profile", "--device", "gh200", "--out", "/tmp/ignore",
-               "--families", "gemm", "--dry-run"])
+               "--families", "gemm,attention,normalization,elementwise,reduction",
+               "--num-workers", "4", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "GEMM work-list" in out
+    assert "work-list" in out
+    for fam in ("gemm", "attention", "normalization", "elementwise", "reduction"):
+        assert fam in out          # per-family counts shown

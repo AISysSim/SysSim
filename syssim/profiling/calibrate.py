@@ -1,5 +1,12 @@
-"""Calibrate (CPU): fit the GEMM residual model + analytical constants from the
-committed profiling data, write the bundle. No GPU."""
+"""Calibrate (CPU): fit ONE regularized LightGBM residual tree per family from the
+committed profiling parquets, then merge that family's entry into the bundle manifest.
+No GPU.
+
+Features come from the SAME features.featurize used at inference: each parquet row's op
+is reconstructed with meta tensors and an AnalyticalBound rebuilt from the recorded anchor
+components, so train-time and inference-time feature rows are identical (parity). One
+uniform strategy for all families — a residual tree, regularized to the row count, which
+subsumes a near-constant fit for the memory-bound families without overfitting."""
 from __future__ import annotations
 
 import json
@@ -9,78 +16,165 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
+import torch
 
 from ..compute.predictor import features as F
+from ..compute.predictor.router import Family
+from ..compute.predictor.analytical import AnalyticalBound
+
+_DTYPE_CODES = {"bf16": 0, "fp16": 1, "fp8_e4m3": 2, "fp8_e5m2": 3, "fp32": 4}
+_META = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp8_e4m3": torch.float8_e4m3fn,
+         "fp8_e5m2": torch.float8_e5m2, "fp32": torch.float32}
+_METRIC_COLS = {"latency_ns", "tensor_ns", "mem_ns", "fma_ns", "sfu_ns"}
 
 
-def _ape(y_true, y_pred):
-    return np.median(np.abs(y_pred - y_true) / np.maximum(y_true, 1e-12))
+def _categorical_codes() -> dict:
+    return {
+        "dtype": dict(_DTYPE_CODES),
+        "op_subtype": {"native_layer_norm": 0, "gelu": 1, "silu": 2, "add": 3, "mul": 4,
+                       "_softmax": 5, "_log_softmax": 6, "_fused_rms_norm": 7},
+        "variant": {"_scaled_dot_product_flash_attention": 0,
+                    "_scaled_dot_product_efficient_attention": 1,
+                    "_scaled_dot_product_cudnn_attention": 2},
+    }
 
 
-def calibrate_gemm(*, data_dir: str, device: str, sfu_peak: float,
-                   target: str = "residual") -> dict[str, Any]:
-    """Fit the GEMM model from data_dir/prof/gemm.parquet -> bundle in data_dir."""
-    df = pd.read_parquet(os.path.join(data_dir, "prof", "gemm.parquet"))
-    latency_ns = df["latency_ns"].to_numpy()
-    # Launch floor = asymptotic small-shape latency. Compute it FIRST so the anchor
-    # here is identical to inference's bound.t_an_ns = max(tensor, fma, sfu, mem, launch)
-    # (fma=sfu=0 for GEMM). This is the train/inference parity guarantee (spec section 2).
-    t_launch_ns = float(latency_ns.min())
-    t_an_ns = np.maximum.reduce([df["tensor_ns"].to_numpy(),
-                                 df["mem_ns"].to_numpy(),
-                                 np.full(len(df), t_launch_ns)])
-    y = np.log(latency_ns) - np.log(np.maximum(t_an_ns, 1e-12))   # residual
+def _reconstruct_op(family: str, row: dict):
+    """Rebuild (func_packet, args, out) with meta tensors from a parquet row's shapes,
+    so featurize() yields the EXACT inference feature row."""
+    aten = torch.ops.aten
+    dt = _META.get(row.get("dtype"), torch.float32)
+    if family == "gemm":
+        M, K, N = int(row["M"]), int(row["K"]), int(row["N"])
+        return (aten.mm,
+                (torch.empty(M, K, dtype=dt, device="meta"),
+                 torch.empty(K, N, dtype=dt, device="meta")),
+                torch.empty(M, N, dtype=dt, device="meta"))
+    if family == "attention":
+        B, Hq, Hkv = int(row["B"]), int(row["H_q"]), int(row["H_kv"])
+        S, D = int(row["S"]), int(row["D"])
+        q = torch.empty(B, Hq, S, D, dtype=dt, device="meta")
+        k = torch.empty(B, Hkv, S, D, dtype=dt, device="meta")
+        v = torch.empty(B, Hkv, S, D, dtype=dt, device="meta")
+        return (aten._scaled_dot_product_flash_attention,
+                (q, k, v, 0.0, bool(row["causal"])), q)
+    if family == "normalization":
+        tokens, hidden = int(row["tokens"]), int(row["hidden"])
+        x = torch.empty(tokens, hidden, dtype=dt, device="meta")
+        w = torch.empty(hidden, dtype=dt, device="meta")
+        # Distinguish rmsnorm from layernorm so featurize's op_subtype differs — they
+        # have different latencies and must not be conflated under one func.
+        if row.get("op_subtype") == "rmsnorm" and hasattr(aten, "_fused_rms_norm"):
+            return aten._fused_rms_norm, (x, [hidden], w, 1e-6), x
+        bias = None if row.get("op_subtype") == "rmsnorm" else torch.empty(hidden, dtype=dt, device="meta")
+        return aten.native_layer_norm, (x, [hidden], w, bias, 1e-5), x
+    if family == "elementwise":
+        total = int(row["total_elements"])
+        x = torch.empty(total, dtype=dt, device="meta")
+        sub = row.get("op_subtype", "gelu")
+        func = {"gelu": aten.gelu, "silu": aten.silu, "add": aten.add, "mul": aten.mul}.get(sub, aten.gelu)
+        args = (x, torch.empty(total, dtype=dt, device="meta")) if sub in ("add", "mul") else (x,)
+        return func, args, x
+    if family == "reduction":
+        B, H, S = int(row["B"]), int(row["H"]), int(row["S"])
+        x = torch.empty(B, H, S, S, dtype=dt, device="meta")
+        return aten._softmax, (x, -1, False), x
+    raise ValueError(f"unknown family: {family}")
 
-    # GEMM feature columns from the measured shapes. `dtype` is encoded to the SAME
-    # integer code HybridEstimator._encode applies at inference (numeric, not an
-    # lgb-categorical), so training and inference featurize identically.
-    _DTYPE_CODES = {"bf16": 0, "fp16": 1, "fp8_e4m3": 2, "fp8_e5m2": 3, "fp32": 4}
-    feat = pd.DataFrame({
-        "log_anchor_ns": np.log(np.maximum(t_an_ns, 1e-12)),
-        "log_M": np.log(df["M"]), "log_N": np.log(df["N"]), "log_K": np.log(df["K"]),
-        "M": df["M"], "N": df["N"], "K": df["K"],
-        "dtype": df["dtype"].map(_DTYPE_CODES).fillna(-1).astype(float),
-    })
-    cols = list(feat.columns)
-    # Held-out split by unique (M,N,K,dtype) shape (random, seeded): identical
-    # measured shapes never leak across train/val, and the held-out set interpolates
-    # within the swept range -- not the degenerate "largest-configs-only" tail split.
+
+def _build_features(family: str, df: pd.DataFrame, t_launch: float):
+    fam = Family(family)
+    feats, t_ans = [], []
+    for _, r in df.iterrows():
+        rd = r.to_dict()
+        bound = AnalyticalBound(
+            tensor_ns=float(rd.get("tensor_ns", 0.0) or 0.0),
+            fma_ns=float(rd.get("fma_ns", 0.0) or 0.0),
+            sfu_ns=float(rd.get("sfu_ns", 0.0) or 0.0),
+            mem_ns=float(rd.get("mem_ns", 0.0) or 0.0),
+            launch_ns=t_launch)
+        func, args, out = _reconstruct_op(family, rd)
+        feats.append(F.featurize(func, args, {}, out, fam, bound))
+        t_ans.append(bound.t_an_ns)
+    return feats, np.asarray(t_ans, dtype=float)
+
+
+def _encode(feats: list, cols: list, codes: dict) -> pd.DataFrame:
+    data: dict = {c: [] for c in cols}
+    for row in feats:
+        for c in cols:
+            v = row.get(c, 0.0)
+            if c in codes:
+                v = codes[c].get(str(v), -1)
+            data[c].append(float(v))
+    return pd.DataFrame(data)
+
+
+def _shape_keys(df: pd.DataFrame) -> list:
+    cols = [c for c in df.columns if c not in _METRIC_COLS]
+    return [tuple(t) for t in df[cols].itertuples(index=False, name=None)]
+
+
+def calibrate_family(family: str, *, data_dir: str, device: str, sfu_peak: float,
+                     target: str = "residual") -> dict[str, Any]:
+    """Fit `family`'s residual tree from data_dir/prof/<family>.parquet; merge its entry
+    into data_dir/manifest.json (preserving other families). Returns metrics incl. p95."""
+    df = pd.read_parquet(os.path.join(data_dir, "prof", f"{family}.parquet"))
+    latency = df["latency_ns"].to_numpy()
+    t_launch = float(latency.min())
+    feats, t_an = _build_features(family, df, t_launch)
+    y = np.log(latency) - np.log(np.maximum(t_an, 1e-12))
+    cols = F.feature_columns(Family(family))
+    codes = _categorical_codes()
+    X = _encode(feats, cols, codes)
+
+    # Held-out split by unique shape signature (random, seeded; no shape leaks).
     rng = np.random.default_rng(0)
-    keys = list(zip(df["M"].tolist(), df["N"].tolist(), df["K"].tolist(), df["dtype"].tolist()))
-    uniq = sorted(set(keys))
+    keys = _shape_keys(df)
+    uniq = sorted(set(keys), key=repr)
     perm = rng.permutation(len(uniq))
     n_val = max(1, int(round(len(uniq) * 0.15)))
     val_keys = {uniq[int(i)] for i in perm[:n_val]}
     is_val = np.array([k in val_keys for k in keys])
-    tr = np.where(~is_val)[0]; va = np.where(is_val)[0]
-    ds = lgb.Dataset(feat.iloc[tr], label=y[tr])
-    booster = lgb.train(
-        {"objective": "regression", "metric": "mae", "num_leaves": 63,
-         "learning_rate": 0.05, "min_data_in_leaf": 10, "verbose": -1},
-        ds, num_boost_round=300,
-        valid_sets=[lgb.Dataset(feat.iloc[va], label=y[va])],
-        callbacks=[lgb.early_stopping(50, verbose=False)],
-    )
-    booster.save_model(os.path.join(data_dir, "gemm_model.lgb"))
+    tr, va = np.where(~is_val)[0], np.where(is_val)[0]
+    if len(tr) == 0 or len(va) == 0:        # too few shapes to split -> evaluate in-sample
+        tr = va = np.arange(len(df))
 
-    pred_resid = booster.predict(feat.iloc[va])
-    # Inference applies the OOD rail max(pred, roofline_hw); roofline_hw == t_an_ns
-    # here (fma=sfu=0, launch already folded in), so mirror it for honest metrics.
-    pred_ns = np.maximum(t_an_ns[va] * np.exp(pred_resid), t_an_ns[va])
+    n = len(tr)
+    params = {"objective": "regression", "metric": "mae", "verbose": -1,
+              "learning_rate": 0.05,
+              "num_leaves": max(3, min(63, n // 4)),         # regularize to row count
+              "min_data_in_leaf": max(1, min(20, n // 10))}
+    booster = lgb.train(params, lgb.Dataset(X.iloc[tr], label=y[tr]),
+                        num_boost_round=300,
+                        valid_sets=[lgb.Dataset(X.iloc[va], label=y[va])],
+                        callbacks=[lgb.early_stopping(50, verbose=False)])
+    booster.save_model(os.path.join(data_dir, f"{family}_model.lgb"))
+
+    pred = np.maximum(t_an[va] * np.exp(booster.predict(X.iloc[va])), t_an[va])  # OOD rail
+    ape = np.abs(pred - latency[va]) / np.maximum(latency[va], 1e-12)
     metrics = {
-        "median_ape": float(_ape(latency_ns[va], pred_ns)),
-        "mean_signed_log_error": float(np.mean(np.log(pred_ns) - np.log(latency_ns[va]))),
+        "median_ape": float(np.median(ape)),
+        "p95_ape": float(np.percentile(ape, 95)),
+        "mean_signed_log_error": float(np.mean(np.log(pred) - np.log(latency[va]))),
     }
 
-    manifest = {
-        "device": device, "schema_version": F.SCHEMA_VERSION,
-        "lightgbm_version": lgb.__version__,
-        "sfu_peak": sfu_peak, "t_launch_ns": {"gemm": t_launch_ns},
-        "categorical_codes": {"dtype": {"bf16": 0, "fp16": 1, "fp8_e4m3": 2,
-                                        "fp8_e5m2": 3, "fp32": 4}},
-        "families": {"gemm": "tree"},
-        "feature_columns": {"gemm": cols},
-        "metrics": {"gemm": metrics},
-    }
-    json.dump(manifest, open(os.path.join(data_dir, "manifest.json"), "w"), indent=2)
+    man_path = os.path.join(data_dir, "manifest.json")
+    m = json.load(open(man_path)) if os.path.exists(man_path) else {
+        "device": device, "lightgbm_version": lgb.__version__, "sfu_peak": sfu_peak,
+        "t_launch_ns": {}, "families": {}, "feature_columns": {}, "metrics": {}}
+    m["schema_version"] = F.SCHEMA_VERSION
+    m["categorical_codes"] = codes
+    m.setdefault("t_launch_ns", {})[family] = t_launch
+    m.setdefault("families", {})[family] = "tree"
+    m.setdefault("feature_columns", {})[family] = cols
+    m.setdefault("metrics", {})[family] = metrics
+    json.dump(m, open(man_path, "w"), indent=2)
     return metrics
+
+
+def calibrate_gemm(*, data_dir: str, device: str, sfu_peak: float,
+                   target: str = "residual") -> dict[str, Any]:
+    """Back-compat wrapper — GEMM via the uniform per-family path."""
+    return calibrate_family("gemm", data_dir=data_dir, device=device,
+                            sfu_peak=sfu_peak, target=target)

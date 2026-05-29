@@ -33,4 +33,5 @@ def test_calibrate_writes_bundle_and_low_error(tmp_path):
     assert m["schema_version"]
     assert m["families"]["gemm"] == "tree"
     assert metrics["median_ape"] < 0.10          # in-distribution gate
+    assert metrics["p95_ape"] < 0.25             # tail gate
     assert abs(metrics["mean_signed_log_error"]) < 0.03   # bias gate

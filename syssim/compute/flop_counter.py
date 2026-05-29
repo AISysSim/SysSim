@@ -660,6 +660,39 @@ def _pytreeify_preserve_structure(f):
     return nf
 
 
+def _softmax_instr_mix(args, kwargs, out):
+    x = args[0] if (args and isinstance(args[0], torch.Tensor)) else (
+        out if isinstance(out, torch.Tensor) else None)
+    n = x.numel() if isinstance(x, torch.Tensor) else 0
+    # 1 exp/elt (transcendental) + a comparable count of FP32 ops (max/sub/div).
+    return (0, n, n)
+
+
+_INSTR_MIX: dict[Any, Any] = {
+    aten._softmax: _softmax_instr_mix,
+    aten._log_softmax: _softmax_instr_mix,
+}
+
+
+def instruction_mix(func_packet, args, kwargs, out):
+    """Additive per-op instruction mix: ``(mma_flops, fp32_flops, transcendental_ops)``.
+
+    Blackbox (op math definition): MMA reuses the FLOP registry (a GEMM/ATTN's
+    matmul FLOPs are its MMA work); transcendental / FP32 ops carry definitional
+    per-element counts; an op with no entry contributes ``(0, 0, 0)``. Existing
+    FLOP totals are unchanged.
+    """
+    if func_packet in _INSTR_MIX:
+        return _INSTR_MIX[func_packet](args, kwargs, out)
+    if func_packet in flop_registry:
+        try:
+            mma = int(flop_registry[func_packet](*args, out_val=out, **kwargs))
+        except Exception:
+            mma = 0
+        return (mma, 0, 0)
+    return (0, 0, 0)
+
+
 class FlopCounterMode:
     """
     ``FlopCounterMode`` is a context manager that counts the number of flops within its context.

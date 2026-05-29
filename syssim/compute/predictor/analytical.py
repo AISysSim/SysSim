@@ -27,6 +27,7 @@ from ..compute_cost_predictor import (
     get_roofline_transfer_time,
     _IGNORE_OPS,
 )
+from ..flop_counter import instruction_mix
 
 _FLOAT_TYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64,
                 torch.float8_e4m3fn, torch.float8_e5m2)
@@ -65,10 +66,9 @@ def analytical_bound(
     """Compute the per-pipeline analytical demands for one operator.
 
     For GEMM/ATTN, ``get_roofline_compute_time`` uses the tensor (MMA) peak -> that
-    is ``tensor_ns``. ``fma_ns``/``sfu_ns`` are 0 in the MVP (GEMM emits no
-    FP32-vector or transcendental ops); they are populated for the memory-bound
-    families in a follow-up plan once ``flop_counter`` emits an instruction mix.
-    ``mem_ns`` is the memory-bound time. ``launch_ns`` is the device launch floor
+    is ``tensor_ns``. ``fma_ns``/``sfu_ns`` come from the op's instruction mix
+    (non-MMA FP32-vector / transcendental counts) — both 0 for GEMM (pure MMA),
+    nonzero for softmax/gelu/norm. ``mem_ns`` is the memory-bound time. ``launch_ns`` is the device launch floor
     (0 for the analytical default; the measured ``t_launch`` for the hybrid anchor).
     """
     if func_packet is None or func_packet in _IGNORE_OPS:
@@ -83,11 +83,17 @@ def analytical_bound(
         func_packet, args, kwargs, out, set(out_dtypes), hw_info, op_type
     )
     mem_ns = get_roofline_transfer_time(flat_args, flat_outs, hw_info)
-    # MVP: no instruction-mix split yet -> FMA/SFU demands are zero for GEMM.
+    # FMA (non-MMA FP32 vector) and SFU (transcendental) demands from the op's
+    # instruction mix; both 0 for GEMM (pure MMA — tensor_ns already covers it).
+    _mma, fp32_flops, transc_ops = instruction_mix(func_packet, args, kwargs, out)
+    fma_peak = hw_info.peak_tflops_math * 1e12            # TFLOP/s -> FLOP/s
+    sfu_peak = (hw_info.sfu_peak or 0.0) * 1e12
+    fma_ns = (fp32_flops / fma_peak * 1e9) if fma_peak > 0 else 0.0
+    sfu_ns = (transc_ops / sfu_peak * 1e9) if sfu_peak > 0 else 0.0
     return AnalyticalBound(
         tensor_ns=float(tensor_ns),
-        fma_ns=0.0,
-        sfu_ns=0.0,
+        fma_ns=float(fma_ns),
+        sfu_ns=float(sfu_ns),
         mem_ns=float(mem_ns),
         launch_ns=float(t_launch_ns),
     )
