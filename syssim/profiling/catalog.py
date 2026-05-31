@@ -52,6 +52,33 @@ def gemm_worklist(spec: ProfilingSpec, token_points: list[int]) -> list[dict]:
     return list(items.values())
 
 
+def bmm_worklist(spec: ProfilingSpec, seq_points: list[int]) -> list[dict]:
+    """Batched attention score matmuls for the EXPLICIT attention path: QK^T, A@V and
+    their backward orientations, batched over (micro_batch * heads/tp). These are O(S^2)
+    memory-bound and shaped unlike the 2D weight GEMMs, so the gemm family must profile
+    them directly or it extrapolates (over-predicts ~2x). Items carry `batch`>1, which
+    routes them to measure_bmm; the gemm featurizer already exposes batched_dim."""
+    tps = spec.parallelism.get("tensor_parallel", [1])
+    items: dict[tuple, dict] = {}
+    for heads in spec.num_attention_heads:
+        for d in spec.head_dims:
+            for dtype in spec.dtypes:
+                for tp in tps:
+                    hq = heads // tp
+                    if hq < 1:
+                        continue
+                    batch = hq                      # micro_batch=1 (the validation matrix)
+                    for S in seq_points:
+                        if batch * S * S * 2 > 8_000_000_000:    # cap working set (~16GB live)
+                            continue
+                        # (M,K,N): QK^T=(S,d,S); A@V=(S,S,d); backward=(d,S,S)
+                        for (M, K, N) in ((S, d, S), (S, S, d), (d, S, S)):
+                            key = (batch, M, K, N, dtype, tp)
+                            items[key] = {"batch": batch, "M": M, "K": K, "N": N,
+                                          "dtype": dtype, "tp": tp, "direction": "fwd"}
+    return list(items.values())
+
+
 def attention_worklist(spec: ProfilingSpec, seq_points: list[int]) -> list[dict]:
     """Deduped attention items {family,B,S,H_q,H_kv,D,causal,dtype}; H_kv<=H_q (GQA)."""
     causals = spec.sweep.get("causal", [True, False])
@@ -86,32 +113,59 @@ def norm_worklist(spec: ProfilingSpec, token_points: list[int]) -> list[dict]:
 
 
 def elementwise_worklist(spec: ProfilingSpec, token_points: list[int]) -> list[dict]:
-    """Deduped elementwise/activation items {family,total_elements,op_subtype,dtype}."""
+    """Deduped elementwise/activation items {family,total_elements,op_subtype,dtype}.
+
+    Covers activations (gelu/silu) and pure mem ops (add/mul) over [tokens,hidden], AND
+    copy_/masked_fill — which the explicit-attention path runs over the O(S^2) attention
+    scores. Those score-sized copies/masks were previously uncalibrated (the residual
+    extrapolated -> ~2x under), so profile them at the real [heads/tp, S, S] sizes too."""
     items: dict[tuple, dict] = {}
+    subtypes = ("gelu", "silu", "add", "mul", "copy_", "masked_fill", "masked_fill_")
     for hidden in spec.hidden_sizes:
         for dtype in spec.dtypes:
-            for sub in ("gelu", "silu", "add", "mul"):
+            for sub in subtypes:
                 for tokens in token_points:
                     total = tokens * hidden
                     key = (total, sub, dtype)
                     items[key] = {"family": "elementwise", "total_elements": total,
                                   "op_subtype": sub, "dtype": dtype}
+    # copy_/masked_fill over attention-scores-sized tensors [b=1, heads/tp, S, S].
+    tps = spec.parallelism.get("tensor_parallel", [1])
+    for heads in spec.num_attention_heads:
+        for dtype in spec.dtypes:
+            for tp in tps:
+                H = max(1, heads // tp)
+                for S in token_points:
+                    total = H * S * S
+                    if total * 2 > 8_000_000_000:
+                        continue
+                    for sub in ("copy_", "masked_fill", "masked_fill_"):
+                        key = (total, sub, dtype)
+                        items[key] = {"family": "elementwise", "total_elements": total,
+                                      "op_subtype": sub, "dtype": dtype}
     return list(items.values())
 
 
 def reduction_worklist(spec: ProfilingSpec, seq_points: list[int]) -> list[dict]:
     """Deduped reduction/softmax items over attention scores {family,B,H,S,op_subtype,dtype}.
-    S is capped at 4096 — the (B,H,S,S) softmax tensor is O(S^2), so larger S would OOM."""
+
+    H is the PER-RANK head count (heads/tp): the explicit-attention softmax runs on the
+    TP-sharded scores [b, heads/tp, S, S], so profiling at full head count made the
+    in-step softmax out-of-distribution (-> residual extrapolated, ~2x under). Cap the
+    working set by tensor bytes (not S) so large-S / low-H shapes are still covered."""
+    tps = spec.parallelism.get("tensor_parallel", [1])
     items: dict[tuple, dict] = {}
     for heads in spec.num_attention_heads:
         for dtype in spec.dtypes:
-            for B in (1, 2, 4):
-                for S in seq_points:
-                    if S > 4096:
-                        continue
-                    key = (B, heads, S, "_softmax", dtype)
-                    items[key] = {"family": "reduction", "B": B, "H": heads, "S": S,
-                                  "op_subtype": "_softmax", "dtype": dtype}
+            for tp in tps:
+                H = max(1, heads // tp)
+                for B in (1, 2):
+                    for S in seq_points:
+                        if B * H * S * S * 2 > 8_000_000_000:    # cap scores tensor ~8GB
+                            continue
+                        key = (B, H, S, "_softmax", dtype)
+                        items[key] = {"family": "reduction", "B": B, "H": H, "S": S,
+                                      "op_subtype": "_softmax", "dtype": dtype}
     return list(items.values())
 
 
@@ -121,6 +175,8 @@ def worklist(spec: ProfilingSpec, families: list[str], token_points: list[int]) 
     out: list[dict] = []
     if "gemm" in fams:
         for it in gemm_worklist(spec, token_points):
+            it = dict(it); it["family"] = "gemm"; out.append(it)
+        for it in bmm_worklist(spec, token_points):
             it = dict(it); it["family"] = "gemm"; out.append(it)
     if "attention" in fams:
         out += attention_worklist(spec, token_points)

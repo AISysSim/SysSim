@@ -36,11 +36,11 @@ def test_inject_optimizer_step():
     g.add_operator(OperatorNode(name="dp_ar", op_type=OperatorType.COLLECTIVE,
                                 estimated_time_ms=0.5))
     inject_optimizer_step(
-        g, param_bytes_per_rank=10_000_000, peak_memory_bandwidth_GBps=3350.0,
+        g, bytes_moved=50_000_000, peak_memory_bandwidth_GBps=3350.0,
         last_op_name="dp_ar",
     )
     optim = [op for op in g.operators.values() if op.config.get("phase") == "optimizer"]
     assert len(optim) == 1
-    # Adam: 5 × 10 MB / 3350 GB/s ≈ 0.01493 ms
+    # Fused Adam is bandwidth-bound: 50 MB moved / 3350 GB/s ≈ 0.01493 ms
     assert optim[0].estimated_time_ms == pytest.approx(50_000_000 / 3350e9 * 1000, rel=1e-6)
     assert "dp_ar" in optim[0].predecessors

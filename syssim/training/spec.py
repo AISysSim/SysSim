@@ -19,6 +19,7 @@ class ModelConfig:
     hidden_size: Optional[int] = None
     num_attention_heads: Optional[int] = None
     num_query_groups: Optional[int] = None
+    kv_channels: Optional[int] = None   # head_dim; defaults to hidden_size // heads when unset
     ffn_hidden_size: Optional[int] = None
     seq_length: Optional[int] = None
     max_position_embeddings: Optional[int] = None
@@ -123,6 +124,7 @@ class TrainingConfig:
     bf16: bool = True
     fp8: bool = False
     recompute_granularity: Optional[str] = None
+    use_distributed_optimizer: bool = False
 
     def __init__(
         self,
@@ -137,6 +139,7 @@ class TrainingConfig:
         fp8: Optional[bool] = None,
         recompute: Optional[str] = None,
         recompute_granularity: Optional[str] = None,
+        use_distributed_optimizer: bool = False,
     ):
         self.micro_batch_size = (
             micro_batch_size if micro_batch_size is not None
@@ -171,6 +174,7 @@ class TrainingConfig:
                 f"recompute_granularity must be null/'selective'/'full', got {rg!r}"
             )
         self.recompute_granularity = rg
+        self.use_distributed_optimizer = use_distributed_optimizer
 
 
 @dataclass
@@ -202,6 +206,7 @@ class HardwareConfig:
     inter_node_latency_us: float = 0.0
     topology: Optional[dict] = None
     estimator: Optional[Any] = None   # custom per-op Estimator (Python-only; not from YAML)
+    calibrated_model: Optional[str] = None  # path to a calibrated TreeEstimator model dir (.lgb files)
 
     def __post_init__(self) -> None:
         for name, val in (
@@ -216,7 +221,7 @@ class HardwareConfig:
 
 
 _MODEL_MEGATRON_FIELDS = frozenset({
-    "num_layers", "hidden_size", "num_attention_heads", "num_query_groups",
+    "num_layers", "hidden_size", "num_attention_heads", "num_query_groups", "kv_channels",
     "ffn_hidden_size", "seq_length", "max_position_embeddings", "vocab_size",
     "swiglu", "rope", "rope_theta", "tie_word_embeddings", "rms_norm_eps",
 })
@@ -265,6 +270,7 @@ _HARDWARE_ALLOWED = frozenset({
     "gpu_memory_GB",
     "inter_node_bandwidth_GBps", "inter_node_latency_us",
     "topology",
+    "calibrated_model",
 })
 
 
@@ -294,6 +300,8 @@ def derive_num_nodes(parallelism: "ParallelismConfig", hardware: "HardwareConfig
     """Compute num_nodes from world_size and gpus_per_node. Raises on invalid combinations."""
     world_size = parallelism.world_size
     gpn = hardware.gpus_per_node
+    if world_size <= gpn:
+        return 1  # fits on a single node (possibly partial); all collectives are intra-node
     if world_size % gpn != 0:
         raise ValueError(
             f"world_size ({world_size}) is not divisible by gpus_per_node ({gpn})"

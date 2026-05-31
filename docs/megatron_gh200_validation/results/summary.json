@@ -1,0 +1,322 @@
+[
+  {
+    "model": "llama3-8b",
+    "case": "1gpu_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 94.643209728,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 2201.1527943665114,
+      "peak_memory_gb": 506.503142889,
+      "mfu": 0.11799699346067766,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 4.351711383676288,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "1gpu_rc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 98.107180032,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 3223.9137595456205,
+      "peak_memory_gb": 135.663755757,
+      "mfu": 0.0805633870055581,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 0.38281169342294835,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "dp4_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 99.707938304,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 2311.4910682196455,
+      "peak_memory_gb": 450.838805993,
+      "mfu": 0.028091111345161512,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 3.521593903771588,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "dp4_rc",
+    "real": {
+      "step_time_ms": 3360.1928069256246,
+      "peak_memory_gb": 79.93417358398438,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 3334.2520333987545,
+      "peak_memory_gb": 79.932309997,
+      "mfu": 0.019474338568376277,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.0077200253132511006,
+    "memory_pct": 2.3314020785022562e-05,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "tp2_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 96.55211776,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 1191.0516783488015,
+      "peak_memory_gb": 259.079978473,
+      "mfu": 0.1090336450568165,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 1.6833174091219436,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "tp2_rc",
+    "real": {
+      "step_time_ms": 1842.4492157064378,
+      "peak_memory_gb": 69.40573120117188,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 1776.6980109075255,
+      "peak_memory_gb": 69.497438701,
+      "mfu": 0.07309329168161491,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.03568684783189631,
+    "memory_pct": 0.0013213245972771995,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "tp4_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 98.331190784,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 686.4747831216786,
+      "peak_memory_gb": 135.368392169,
+      "mfu": 0.09458811097973725,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 0.37665771246844826,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "tp4_rc",
+    "real": {
+      "step_time_ms": 974.0761700086296,
+      "peak_memory_gb": 36.307987213134766,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 1030.2435607899079,
+      "peak_memory_gb": 36.397498861,
+      "mfu": 0.06302621578233354,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.0576622162728616,
+    "memory_pct": 0.0024653431582364114,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "1gpu_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 99.78947328,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 808.6290545973294,
+      "peak_memory_gb": 241.585970665,
+      "mfu": 0.14869019437025677,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 1.4209564668923766,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "1gpu_rc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 98.190656512,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 1142.7218610032517,
+      "peak_memory_gb": 128.085746285,
+      "mfu": 0.1052182647455029,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 0.30445961800190713,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "dp4_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 99.271394816,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 921.1707270224041,
+      "peak_memory_gb": 182.665567721,
+      "mfu": 0.03263108774910886,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 0.8400624677387831,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "dp4_rc",
+    "real": {
+      "step_time_ms": 1157.2883082553744,
+      "peak_memory_gb": 65.84297180175781,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 1255.2635334283264,
+      "peak_memory_gb": 69.165343341,
+      "mfu": 0.023946208923382846,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.08465930613318881,
+    "memory_pct": 0.050459015568818634,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "tp2_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 99.488953856,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 442.1471280861301,
+      "peak_memory_gb": 125.547236841,
+      "mfu": 0.135967423131257,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 0.26192136890610673,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "tp2_rc",
+    "real": {
+      "step_time_ms": 694.7851711884141,
+      "peak_memory_gb": 64.63278198242188,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 633.522348427373,
+      "peak_memory_gb": 66.405192301,
+      "mfu": 0.09489421454505932,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.08817520192069217,
+    "memory_pct": 0.02742277624782058,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "tp4_norc",
+    "real": {
+      "step_time_ms": 286.37021593749523,
+      "peak_memory_gb": 66.33806610107422,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 276.27226581784225,
+      "peak_memory_gb": 67.527867881,
+      "mfu": 0.10880137655655052,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.0352618727705154,
+    "memory_pct": 0.017935430588419288,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "tp4_rc",
+    "real": {
+      "step_time_ms": 379.00104094296694,
+      "peak_memory_gb": 34.55659484863281,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 398.3938696373728,
+      "peak_memory_gb": 35.564913261,
+      "mfu": 0.07544996325555582,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.05116827290541439,
+    "memory_pct": 0.029178754931841362,
+    "pass": true
+  }
+]

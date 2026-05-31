@@ -32,16 +32,18 @@ def inject_dp_gradient_allreduce(
 
 def inject_optimizer_step(
     graph: OperatorGraph,
-    param_bytes_per_rank: int,
+    bytes_moved: int,
     peak_memory_bandwidth_GBps: float,
     last_op_name: str,
 ) -> None:
-    """Inject one MATH op modeling Adam's memory-bound parameter update.
+    """Inject one MATH op modeling the (fused, memory-bound) Adam parameter update.
 
-    Adam mixed-precision moves ~5 × param_bytes per step:
-    read params/grad/m/v, write params/m/v.
+    Real Megatron fuses Adam into a single multi_tensor_apply kernel, so it is bandwidth-bound:
+    time = bytes_moved / peak_bandwidth. The caller computes bytes_moved from the mixed-precision
+    state traffic (fp32 master+m+v read+write, fp32 grad read, bf16 param write). This is NOT traced
+    because the fused kernel has no FakeTensor impl and decomposes into ~100x-heavier per-param ops.
     """
-    bytes_moved = 5 * int(param_bytes_per_rank)
+    bytes_moved = int(bytes_moved)
     time_ms = bytes_moved / (peak_memory_bandwidth_GBps * 1e9) * 1000.0 \
               if peak_memory_bandwidth_GBps > 0 else 0.0
     idx = len(graph.operators)

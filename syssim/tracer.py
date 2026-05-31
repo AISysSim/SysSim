@@ -73,14 +73,19 @@ def _to_fake_device(
     fake_mode: FakeTensorMode,
     device: str,
 ) -> torch.Tensor:
-    """Convert a real tensor to a fake tensor on *device* (e.g. ``cuda:0``).
+    """Create a fake tensor on *device* with *tensor*'s shape/dtype/stride.
 
-    Creates an intermediate meta tensor, then wraps it as a FakeTensor that
-    claims to live on *device*.  Must be called outside any active
-    FakeTensorMode context to avoid double-wrapping.
+    Built via an allocation op *inside* ``fake_mode`` so the resulting fake storage is tracked by
+    the MemTracker on *device* -- exactly like activations created during the traced forward. The
+    previous approach (``FakeTensor(fake_mode, tensor.to("meta"), device)``) left the underlying
+    storage on the ``meta`` device, so model weights were charged to a phantom ``meta`` bucket and
+    double-counted against the distributed optimizer's real fake-cuda param buffer.
     """
-    meta = tensor.to(device="meta")
-    return _FakeTensor(fake_mode, meta, torch.device(device))
+    with fake_mode:
+        return torch.empty_strided(
+            tuple(tensor.shape), tuple(tensor.stride()),
+            dtype=tensor.dtype, device=torch.device(device),
+        )
 
 
 def _convert_model_to_fake(
@@ -134,6 +139,50 @@ def _restore_model(
     """Undo the parameter/buffer swap performed by :func:`_convert_model_to_fake`."""
     for mod, dict_name, orig_dict, _is_params in restore_log:
         setattr(mod, dict_name, orig_dict)
+
+
+def _build_megatron_ddp_optimizer(model, provider, use_distributed_optimizer):
+    """Wrap *model* in the real Megatron DistributedDataParallel + get_megatron_optimizer, exactly
+    as run_megatron.py does, so the trace runs the SAME training stack as real execution: DDP gives
+    the fp32 gradient buffer (grad_reduce_in_fp32); the optimizer gives the fp32 master weights and
+    Adam m/v, ZeRO-sharded across the DP group when the distributed optimizer is on.
+
+    Returns ``(forward_backward_model, optimizer)``; falls back to ``(model, None)`` when the stack
+    can't be built (e.g. provider is None). Does NOT call ``optimizer.step()`` -- the caller decides
+    when (the memory pass steps before the backward to allocate m/v; the timing pass steps after the
+    backward so the Adam update's ops are captured and timed).
+    """
+    if provider is None:
+        return model, None
+    try:
+        from megatron.core.distributed import (
+            DistributedDataParallel, DistributedDataParallelConfig)
+        from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
+        from megatron.core import tensor_parallel, parallel_state
+        # The fake tracing process group doesn't build the "partial data parallel" subgroups that
+        # DDP/the distributed optimizer query (regular + GLOO variants); with a single optimizer
+        # instance they are just the full data-parallel group.
+        dp_group = parallel_state.get_data_parallel_group(with_context_parallel=True)
+        if getattr(parallel_state, "_INTRA_PARTIAL_DATA_PARALLEL_GROUP_WITH_CP", None) is None:
+            parallel_state._INTRA_PARTIAL_DATA_PARALLEL_GROUP_WITH_CP = dp_group
+        if getattr(parallel_state, "_INTRA_PARTIAL_DATA_PARALLEL_GROUP_WITH_CP_GLOO", None) is None:
+            parallel_state._INTRA_PARTIAL_DATA_PARALLEL_GROUP_WITH_CP_GLOO = dp_group
+        for param in model.parameters():
+            tensor_parallel.set_defaults_if_not_set_tensor_model_parallel_attributes(param)
+        ddp_model = DistributedDataParallel(
+            config=provider,
+            ddp_config=DistributedDataParallelConfig(
+                grad_reduce_in_fp32=True, overlap_grad_reduce=False,
+                use_distributed_optimizer=use_distributed_optimizer),
+            module=model)
+        optimizer = get_megatron_optimizer(
+            OptimizerConfig(optimizer="adam", lr=1e-4, bf16=True,
+                            use_distributed_optimizer=use_distributed_optimizer),
+            [ddp_model])
+        return ddp_model, optimizer
+    except Exception as exc:
+        log.debug(f"DDP+megatron optimizer build failed: {exc}")
+        return model, None
 
 
 
@@ -768,6 +817,12 @@ class OperatorGraphTracer:
         forward_only: bool = False,
     ) -> OperatorGraph:
         """Run `forward_backward_func(...)` under FakeTensorMode + TorchDispatchMode."""
+        if torch.version.cuda is None:
+            raise RuntimeError(
+                f"syssim tracer needs a CUDA build of PyTorch, but a CPU-only build is "
+                f"installed (torch {torch.__version__}). Fake CUDA tensors require a CUDA "
+                f"wheel so PyTorch dispatches GPU kernel variants; reinstall a CUDA torch."
+            )
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "syssim tracer requires a CUDA-capable device. "
@@ -794,6 +849,19 @@ class OperatorGraphTracer:
 
         trace_device = f"cuda:{torch.cuda.current_device()}"
 
+        # Same fake-safe CUDA RNG as estimate_memory: full recompute checkpoints the RNG state,
+        # which hits real CUDA under FakeTensor; it affects neither memory nor timing.
+        import torch.cuda.random as cuda_random
+        import megatron.core.tensor_parallel.random as megatron_random
+        orig_get_rng_state = cuda_random.get_rng_state
+        orig_set_rng_state = cuda_random.set_rng_state
+        orig_megatron_set_rng = megatron_random._set_cuda_rng_state
+        fake_get_rng_state = lambda *args, **kwargs: torch.zeros(16, dtype=torch.uint8)
+        fake_set_rng_state = lambda *args, **kwargs: None
+        cuda_random.get_rng_state = torch.cuda.get_rng_state = fake_get_rng_state
+        cuda_random.set_rng_state = torch.cuda.set_rng_state = fake_set_rng_state
+        megatron_random._set_cuda_rng_state = fake_set_rng_state
+
         cuda_tracker.install_hooks()
         try:
             restore_log = _convert_model_to_fake(model, fake_mode, trace_device)
@@ -803,6 +871,11 @@ class OperatorGraphTracer:
                 with _dist_noop_context(graph=graph,
                                         last_op_on_stream=last_op_on_stream), \
                      fake_mode, mod_tracker, tracer_mode:
+                    # NOTE: the optimizer step is NOT traced here. Real Megatron fuses Adam into a
+                    # single multi_tensor_apply kernel; under FakeTensor that fused kernel has no
+                    # fake impl and decomposes into hundreds of per-param ops touching ~100x the
+                    # memory of the fused kernel, so the captured time is meaningless. The optimizer
+                    # is instead modeled analytically (memory-bound) in runner.inject_optimizer_step.
                     forward_backward_func(
                         forward_step_func=forward_step_func,
                         data_iterator=data_iterator,
@@ -818,6 +891,9 @@ class OperatorGraphTracer:
                 _MockDistHandle._capture_last_op = None
         finally:
             cuda_tracker.remove_hooks()
+            cuda_random.get_rng_state = torch.cuda.get_rng_state = orig_get_rng_state
+            cuda_random.set_rng_state = torch.cuda.set_rng_state = orig_set_rng_state
+            megatron_random._set_cuda_rng_state = orig_megatron_set_rng
 
         return graph
 
@@ -830,13 +906,15 @@ class OperatorGraphTracer:
         data_iterator,
         seq_length: int,
         micro_batch_size: int,
+        use_distributed_optimizer: bool = False,
+        provider=None,
     ):
         """Run ONE microbatch under MemTracker + a fake AdamW step to capture
         the per-microbatch memory footprint. Sets and returns
         ``self.memory_estimate`` (a MemoryProfile). Must run on a freshly-built
         model BEFORE any runtime pass mutates gradients.
         """
-        from .training.mem_tracker import MemTracker
+        from .training.mem_tracker import MemTracker, _MemRefType
         from .training.mem_profile import MemoryProfile
 
         # The memory pass builds no runtime op graph (no cuda_tracker/tracer_mode),
@@ -855,28 +933,43 @@ class OperatorGraphTracer:
         restore_log = _convert_model_to_fake(model, fake_mode, trace_device)
         _MockDistHandle._capture_graph = graph
         _MockDistHandle._capture_last_op = last_op_on_stream
+        # Full recompute checkpoints the CUDA RNG state for determinism; under FakeTensor
+        # torch.cuda.get_rng_state hits real CUDA (illegal access). It affects neither memory nor
+        # timing, so make it fake-safe for the trace — the recompute still re-runs the forward.
+        import torch.cuda.random as cuda_random
+        import megatron.core.tensor_parallel.random as megatron_random
+        orig_get_rng_state = cuda_random.get_rng_state
+        orig_set_rng_state = cuda_random.set_rng_state
+        orig_megatron_set_rng = megatron_random._set_cuda_rng_state
+        fake_get_rng_state = lambda *args, **kwargs: torch.zeros(16, dtype=torch.uint8)
+        fake_set_rng_state = lambda *args, **kwargs: None
+        cuda_random.get_rng_state = torch.cuda.get_rng_state = fake_get_rng_state
+        cuda_random.set_rng_state = torch.cuda.set_rng_state = fake_set_rng_state
+        megatron_random._set_cuda_rng_state = fake_set_rng_state  # raw CUDA call in fork/recompute
         try:
             with _dist_noop_context(graph=graph, last_op_on_stream=last_op_on_stream), \
                  fake_mode, mem_tracker:
+                # Build the real Megatron mixed-precision training stack on the fake model so the
+                # MemTracker MEASURES the true footprint (not a hand-built estimate). Step the
+                # optimizer once BEFORE the backward so the persistent optimizer (master + Adam m/v)
+                # and grad buffer are present at the backward peak (the binding peak without recompute).
+                forward_backward_model, megatron_optimizer = _build_megatron_ddp_optimizer(
+                    model, provider, use_distributed_optimizer)
+                if megatron_optimizer is not None:
+                    try:
+                        megatron_optimizer.step()   # steady state: allocate Adam m/v pre-backward
+                    except Exception:
+                        pass
                 forward_backward_func(
                     forward_step_func=forward_step_func,
                     data_iterator=data_iterator,
-                    model=model,
+                    model=forward_backward_model,
                     num_microbatches=1,
                     seq_length=seq_length,
                     micro_batch_size=micro_batch_size,
                     forward_only=False,
                 )
-                try:
-                    params = [p for p in model.parameters() if p.requires_grad]
-                    if params:
-                        opt = torch.optim.AdamW(params, lr=1e-3)
-                        for p in params:
-                            if p.grad is None:
-                                p.grad = torch.zeros_like(p)
-                        opt.step()
-                except Exception as e:
-                    log.debug(f"fake optimizer step for memory tracking failed: {e}")
+                del megatron_optimizer
             try:
                 self.memory_estimate = MemoryProfile.from_mem_tracker(mem_tracker)
             except Exception as e:
@@ -886,4 +979,7 @@ class OperatorGraphTracer:
             _restore_model(restore_log)
             _MockDistHandle._capture_graph = None
             _MockDistHandle._capture_last_op = None
+            cuda_random.get_rng_state = torch.cuda.get_rng_state = orig_get_rng_state
+            cuda_random.set_rng_state = torch.cuda.set_rng_state = orig_set_rng_state
+            megatron_random._set_cuda_rng_state = orig_megatron_set_rng
         return self.memory_estimate

@@ -43,15 +43,10 @@ def measure_gemm(M: int, K: int, N: int, dtype: str, reps: int = 5,
     dt = _DTYPE[dtype]
     a = torch.randn(M, K, device="cuda").to(dt)
     b = torch.randn(K, N, device="cuda").to(dt)
-    samples = []
-    for _ in range(reps + warmup):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        _ = _gemm_kernel(a, b, dtype)
-        end.record()
-        torch.cuda.synchronize()
-        samples.append(start.elapsed_time(end) * 1e6)   # ms -> ns
+    # inner=_SMALL_INNER: a one-shot event sample is launch-floor dominated for the many
+    # small/medium GEMMs in a transformer step (verified inner=1 over-measures up to 1.6x);
+    # back-to-back launches recover the steady-state per-kernel cost the step actually pays.
+    lat = _time_ns(lambda: _gemm_kernel(a, b, dtype), reps, warmup, inner=_SMALL_INNER)
 
     from ..compute.predictor.roofline import roofline
     from ..operator_graph import OperatorType
@@ -61,9 +56,30 @@ def measure_gemm(M: int, K: int, N: int, dtype: str, reps: int = 5,
     aten = torch.ops.aten
     out = torch.empty(M, N, dtype=dt, device="cuda")
     bound = roofline(aten.mm, (a, b), {}, out, hw_info, OperatorType.GEMM)
-    return {"M": M, "K": K, "N": N, "dtype": dtype,
-            "latency_ns": median_of_reps(samples, warmup),
+    return {"M": M, "K": K, "N": N, "batch": 1, "dtype": dtype,
+            "latency_ns": lat,
             "tensor_ns": bound.tensor_ns, "mem_ns": bound.mem_ns}
+
+
+def measure_bmm(batch: int, M: int, K: int, N: int, dtype: str, reps: int = 5,
+                warmup: int = 2, hw_info: Any = None) -> dict[str, Any]:
+    """Time one batched (batch x MxKxN) bmm — the explicit-attention score matmuls
+    (QK^T, A@V, and their backward orientations). These are O(S^2) memory-bound and not
+    covered by the 2D weight GEMMs, so the gemm residual must see them. Records the SAME
+    roofline anchor inference uses (train/inference parity)."""
+    dt = _DTYPE[dtype]
+    a = torch.randn(batch, M, K, device="cuda", dtype=dt)
+    b = torch.randn(batch, K, N, device="cuda", dtype=dt)
+    lat = _time_ns(lambda: torch.bmm(a, b), reps, warmup, inner=_SMALL_INNER)
+    from ..compute.predictor.roofline import roofline
+    if hw_info is None:
+        from ..config import get_hardware_info
+        hw_info, _ = get_hardware_info()
+    aten = torch.ops.aten
+    out = torch.empty(batch, M, N, dtype=dt, device="cuda")
+    bound = roofline(aten.bmm, (a, b), {}, out, hw_info, OperatorType.GEMM)
+    return {"M": M, "K": K, "N": N, "batch": batch, "dtype": dtype,
+            "latency_ns": lat, "tensor_ns": bound.tensor_ns, "mem_ns": bound.mem_ns}
 
 
 def _time_ns(fn, reps: int = 5, warmup: int = 2, inner: int = 1) -> float:
@@ -106,7 +122,7 @@ def measure_attention(B, H_q, H_kv, S, D, causal, dtype, reps=5, warmup=2, hw_in
     v = torch.randn(B, H_kv, S, D, device="cuda", dtype=dt)
     gqa = H_kv != H_q
     lat = _time_ns(lambda: F.scaled_dot_product_attention(
-        q, k, v, is_causal=bool(causal), enable_gqa=gqa), reps, warmup)
+        q, k, v, is_causal=bool(causal), enable_gqa=gqa), reps, warmup, inner=_SMALL_INNER)
     anchor = _anchor(torch.ops.aten._scaled_dot_product_flash_attention,
                      (q, k, v, 0.0, bool(causal)), {}, q, hw_info, OperatorType.ATTN)
     return {"B": B, "H_q": H_q, "H_kv": H_kv, "S": S, "D": D, "causal": bool(causal),
@@ -141,6 +157,15 @@ def measure_elementwise(total_elements, op_subtype, dtype, reps=5, warmup=2, hw_
     elif op_subtype == "add":
         y = torch.randn(total_elements, device="cuda", dtype=dt)
         fn, func, fargs = (lambda: x + y), aten.add, (x, y)
+    elif op_subtype == "copy_":
+        y = torch.empty_like(x)
+        fn, func, fargs = (lambda: y.copy_(x)), aten.copy_, (y, x)
+    elif op_subtype in ("masked_fill", "masked_fill_"):
+        mask = torch.zeros(total_elements, dtype=torch.bool, device="cuda")
+        if op_subtype == "masked_fill_":
+            fn, func, fargs = (lambda: x.masked_fill_(mask, 0.0)), aten.masked_fill_, (x, mask, 0.0)
+        else:
+            fn, func, fargs = (lambda: x.masked_fill(mask, 0.0)), aten.masked_fill, (x, mask, 0.0)
     else:   # mul
         y = torch.randn(total_elements, device="cuda", dtype=dt)
         fn, func, fargs = (lambda: x * y), aten.mul, (x, y)
@@ -163,7 +188,10 @@ def _dispatch_measure(item):
     """Route a family-tagged work item to its measurer (tags the row with family)."""
     fam = item.get("family")
     if fam == "gemm":
-        r = measure_gemm(item["M"], item["K"], item["N"], item["dtype"])
+        if int(item.get("batch", 1)) > 1:
+            r = measure_bmm(item["batch"], item["M"], item["K"], item["N"], item["dtype"])
+        else:
+            r = measure_gemm(item["M"], item["K"], item["N"], item["dtype"])
     elif fam == "attention":
         r = measure_attention(item["B"], item["H_q"], item["H_kv"], item["S"], item["D"],
                               item["causal"], item["dtype"])

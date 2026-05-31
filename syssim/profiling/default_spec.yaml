@@ -1,10 +1,11 @@
 # Default profiling spec — the architectural space to cover (profiling-time only).
-hidden_sizes:        [2048, 4096, 5120, 8192]
-ffn_hidden_sizes:    [6144, 11008, 14336, 28672]
-num_attention_heads: [16, 32, 64]
-num_query_groups:    [1, 8, 16]
-head_dims:           [64, 128]
-vocab_sizes:         [32000, 151936]
+# Covers Qwen2 (0.5/1.5/7/72B), Qwen3 dense (0.6/1.7/4/8/14/32B), Llama3 (3.2-1B/3B, 8B, 70B, 405B).
+hidden_sizes:        [896, 1024, 1536, 2048, 2560, 3072, 3584, 4096, 5120, 8192, 16384]
+ffn_hidden_sizes:    [3072, 4864, 6144, 8192, 8960, 9728, 11008, 12288, 14336, 17408, 18944, 25600, 28672, 29568, 53248]
+num_attention_heads: [12, 14, 16, 24, 28, 32, 40, 64, 128]
+num_query_groups:    [1, 2, 4, 8, 16]
+head_dims:           [64, 80, 128]
+vocab_sizes:         [32000, 128256, 151936, 152064]
 dtypes:              [bf16, fp16, fp8_e4m3, fp8_e5m2]
 parallelism:
   tensor_parallel:   [1, 2, 4, 8]

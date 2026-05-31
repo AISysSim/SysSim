@@ -69,6 +69,7 @@ def resolve_megatron_provider(
             hidden_size=model.hidden_size,
             num_attention_heads=model.num_attention_heads,
             num_query_groups=model.num_query_groups,
+            kv_channels=model.kv_channels,   # None -> Megatron derives hidden_size // heads
             ffn_hidden_size=model.ffn_hidden_size,
             attention_softmax_in_fp32=False,
         )
@@ -93,6 +94,25 @@ def resolve_megatron_provider(
             provider.pipeline_dtype = torch.float16
         else:
             provider.pipeline_dtype = torch.float32
+    # Activation recompute (checkpointing): flow it onto the traced model so the MemTracker
+    # physically measures the reduced activation footprint, matching what real megatron stores.
+    rg = training.recompute_granularity
+    if rg == "full":
+        provider.recompute_granularity = "full"
+        provider.recompute_method = "uniform"
+        provider.recompute_num_layers = 1
+    elif rg == "selective":
+        provider.recompute_granularity = "selective"
+
+    # Disable fused custom kernels for tracing. SysSim traces under FakeTensorMode; fused ops run
+    # real CUDA kernels that read fake-tensor data -> CUDA illegal-memory-access (surfacing later at
+    # the next sync, e.g. attention's RNG fork). Forcing the torch-native (aten) paths keeps the
+    # graph FakeTensor-safe and lets SysSim cost-model these ops directly. (apex/TE fused norms come
+    # from the layer spec, not these flags, and are handled by _norm_meta meta kernels.)
+    for _flag in ("masked_softmax_fusion", "bias_activation_fusion", "apply_rope_fusion",
+                  "bias_dropout_fusion", "persist_layer_norm", "gradient_accumulation_fusion"):
+        if hasattr(provider, _flag):
+            setattr(provider, _flag, False)
     if hasattr(provider, "finalize"):
         provider.finalize()
     return provider

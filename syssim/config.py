@@ -117,6 +117,7 @@ class HardwareInfo:
         network: Optional[NetworkParams] = None,
         estimator: Any = None,
         sfu_peak: float | None = None,
+        calibrated_model: str | None = None,
     ):
         self.peak_tflops_mm = peak_tflops_mm
         self.peak_tflops_math = peak_tflops_math
@@ -133,21 +134,30 @@ class HardwareInfo:
         self.sfu_peak = sfu_peak if sfu_peak is not None else peak_tflops_math / 4.0
         # Network parameters (for network simulator)
         self.network = network if network is not None else NetworkParams()
-        # Optional custom per-op estimator (Python-only selection). When None,
-        # build_estimator() lazily builds the default RooflineEstimator.
+        # Optional per-op estimator selection. Precedence: an explicitly-attached `estimator`
+        # object > a provided `calibrated_model` path (loads the TreeEstimator) > the default
+        # analytical RooflineEstimator. Providing the calibrated .lgb model is what selects it —
+        # no hardware auto-detection.
         self.estimator = estimator
+        self.calibrated_model = calibrated_model
         self._resolved_estimator: Any = None
 
     def build_estimator(self):
         """Return the resolved per-op Estimator (cached).
 
-        Uses the attached `estimator` if set, else the default RooflineEstimator.
-        Imported lazily to avoid an import cycle (estimator.py imports this
-        package's compute helpers).
+        If a calibrated model directory was provided, load the TreeEstimator from it; otherwise
+        use an explicitly-attached estimator, else the default RooflineEstimator. Imported lazily
+        to avoid an import cycle (estimator.py imports this package's compute helpers).
         """
         if self._resolved_estimator is None:
-            from .compute.roofline_estimator import RooflineEstimator
-            self._resolved_estimator = self.estimator or RooflineEstimator(self)
+            if self.estimator is not None:
+                self._resolved_estimator = self.estimator
+            elif self.calibrated_model:
+                from .compute.tree_estimator import TreeEstimator
+                self._resolved_estimator = TreeEstimator.load(self.calibrated_model, self)
+            else:
+                from .compute.roofline_estimator import RooflineEstimator
+                self._resolved_estimator = RooflineEstimator(self)
         return self._resolved_estimator
 
     def get_peak_tflops(self, op_type, dtype: torch.dtype, is_large_op: bool = False) -> float:

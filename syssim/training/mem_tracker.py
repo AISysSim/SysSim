@@ -19,7 +19,11 @@ import torch
 from torch import nn, optim
 from torch._guards import active_fake_mode
 from torch._subclasses.fake_tensor import DataDependentOutputException
-from torch._opaque_base import OpaqueBase
+try:
+    from torch._opaque_base import OpaqueBase
+except ImportError:  # torch without opaque tensors (e.g. NGC torch 2.10): sentinel, the case below is dead
+    class OpaqueBase:  # noqa: D401 - no instances exist in this torch, so `case OpaqueBase()` never matches
+        pass
 from torch.distributed.tensor import DTensor
 from torch.optim.optimizer import (
     register_optimizer_step_post_hook,
@@ -491,6 +495,10 @@ class MemTracker(TorchDispatchMode):
         reftype: _RefType,
         update_existing: bool = False,
     ) -> set[_WeakRefInfo]:
+        if t.device.type == "meta":
+            # meta tensors are zero-byte shape placeholders (e.g. the model-on-meta originals the
+            # tracer retains for restore); they occupy no real device memory, so never account them.
+            return set()
         sts = get_untyped_storages(t)
         winfos = set()
         for st in sts:
@@ -655,7 +663,10 @@ class MemTracker(TorchDispatchMode):
                     post_acc_grad_hook_handle,
                 )
         buffer_memory = 0
-        for buffer in module.buffers():
+        # Use the unbound nn.Module.buffers: Megatron's DistributedDataParallel shadows the
+        # `buffers` method with a list attribute (its grad buffers), so module.buffers() would
+        # try to call a list. The grad buffers themselves are tracked via allocation dispatch.
+        for buffer in torch.nn.Module.buffers(module):
             winfos = self._update_and_maybe_create_winfos(
                 buffer,
                 _MemRefType.BUFFER,
