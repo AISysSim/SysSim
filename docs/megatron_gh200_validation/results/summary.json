@@ -48,9 +48,9 @@
       "oom": true
     },
     "sim": {
-      "step_time_ms": 2311.4910682196455,
+      "step_time_ms": 2220.6430618196455,
       "peak_memory_gb": 450.838805993,
-      "mfu": 0.028091111345161512,
+      "mfu": 0.029240337669349418,
       "oom": true
     },
     "real_oom": true,
@@ -68,14 +68,14 @@
       "oom": false
     },
     "sim": {
-      "step_time_ms": 3334.2520333987545,
+      "step_time_ms": 3243.4040269987545,
       "peak_memory_gb": 79.932309997,
-      "mfu": 0.019474338568376277,
+      "mfu": 0.020019816350412802,
       "oom": false
     },
     "real_oom": false,
     "sim_oom": false,
-    "step_time_pct": 0.0077200253132511006,
+    "step_time_pct": 0.034756571017638974,
     "memory_pct": 2.3314020785022562e-05,
     "pass": true
   },
@@ -208,9 +208,9 @@
       "oom": true
     },
     "sim": {
-      "step_time_ms": 921.1707270224041,
+      "step_time_ms": 826.7778783824041,
       "peak_memory_gb": 182.665567721,
-      "mfu": 0.03263108774910886,
+      "mfu": 0.03635656397119466,
       "oom": true
     },
     "real_oom": true,
@@ -228,14 +228,14 @@
       "oom": false
     },
     "sim": {
-      "step_time_ms": 1255.2635334283264,
+      "step_time_ms": 1160.8706847883263,
       "peak_memory_gb": 69.165343341,
-      "mfu": 0.023946208923382846,
+      "mfu": 0.025893325776298166,
       "oom": false
     },
     "real_oom": false,
     "sim_oom": false,
-    "step_time_pct": 0.08465930613318881,
+    "step_time_pct": 0.0030954918557436965,
     "memory_pct": 0.050459015568818634,
     "pass": true
   },

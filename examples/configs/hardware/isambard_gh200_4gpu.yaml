@@ -1,12 +1,5 @@
-# Isambard-AI Phase 2 — NVIDIA GH200 Grace-Hopper, one node (4 GPUs). SysSim hardware-YAML schema.
-# Source: https://docs.isambard.ac.uk/specs/#system-specifications-isambard-ai-phase-2
-#         + GH200 / H100 datasheets.
-#
-# INTERCONNECT:
-#   * Intra-node GPU<->GPU is NVLink — the four GH200 are directly NVLink-connected
-#     (point-to-point, NOT an NVSwitch), ~900 GB/s per GPU. This is the binding parameter for
-#     TP/DP within the node.
-#   * Inter-node is Slingshot-11 (4x Cassini NICs @ 200 Gbps); not exercised by a single node.
+# Isambard-AI Phase 2 — NVIDIA GH200 (Hopper H100), one node (4 GPUs). SysSim hardware-YAML schema.
+# Intra-node NVLink mesh (point-to-point, no NVSwitch); inter-node Slingshot not exercised here.
 
 peak_tflops_mm: 1979              # H100 bf16/fp16 tensor-core peak (TFLOP/s)
 peak_tflops_math: 989             # H100 vector/math peak
@@ -20,15 +13,9 @@ gpu_memory_GB: 96                 # 96 GB HBM3 per GPU (384 GB/node)
 # anchor it was calibrated against.
 calibrated_model: data/gh200
 
-# Ordered per-dimension network description; timing is produced by the flow simulator over the
-# links these dimensions lay down (no analytical collective formula). The four GPUs are a
-# point-to-point NVLink mesh (fully_connected, no switch).
+# Topology: intra-node NVLink mesh (fully_connected), 4 GPUs/node.
 topology:
-  dims:      [ fully_connected ]   # 4 GPUs, direct NVLink (no switch)
-  size:      [ 4 ]                 # endpoints in this dimension (4 GPUs / node)
-  bandwidth: [ 450 ]               # per-GPU UNI-DIRECTIONAL NVLink (900 GB/s bidirectional / 2); the
-                                   # builder splits it across the 3 peers -> 150 GB/s per peer per
-                                   # direction (full-duplex)
-  latency:   [ 12000 ]             # ns per-hop; a 4-GPU ring all-reduce chains 2*(n-1)=6 hops, so
-                                   # this lands the whole-all-reduce latency floor at ~72us, matching
-                                   # the measured intra-node NCCL all-reduce floor on GH200 NVLink.
+  dims:      [ fully_connected ]
+  size:      [ 4 ]
+  bandwidth: [ 450 ]               # GB/s, per-GPU NVLink (uni-directional)
+  latency:   [ 12000 ]             # ns per ring hop

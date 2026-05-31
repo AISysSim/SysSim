@@ -1,0 +1,162 @@
+[
+  {
+    "model": "llama3-8b",
+    "case": "2node_tp4dp2_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 98.390222336,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 744.5901873580964,
+      "peak_memory_gb": 125.938634217,
+      "mfu": 0.0436027455593344,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 0.2799913571383436,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "2node_tp4dp2_rc",
+    "real": {
+      "step_time_ms": 1020.1575080864131,
+      "peak_memory_gb": 26.871437072753906,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 1088.3589650263257,
+      "peak_memory_gb": 26.867077613,
+      "mfu": 0.02983039376587199,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.06685384991955133,
+    "memory_pct": 0.00016223396397088076,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "4node_tp4dp4_norc",
+    "real": {
+      "step_time_ms": null,
+      "peak_memory_gb": 98.428585472,
+      "oom": true
+    },
+    "sim": {
+      "step_time_ms": 773.6568894763053,
+      "peak_memory_gb": 121.224261097,
+      "mfu": 0.020982283572326756,
+      "oom": true
+    },
+    "real_oom": true,
+    "sim_oom": true,
+    "step_time_pct": null,
+    "memory_pct": 0.23159609086818272,
+    "pass": true
+  },
+  {
+    "model": "llama3-8b",
+    "case": "4node_tp4dp4_rc",
+    "real": {
+      "step_time_ms": 1053.5704847425222,
+      "peak_memory_gb": 22.15459442138672,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 1117.4256671445348,
+      "peak_memory_gb": 22.152704493,
+      "mfu": 0.014527219769488623,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.06060836301580515,
+    "memory_pct": 8.530638615043498e-05,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "2node_tp4dp2_norc",
+    "real": {
+      "step_time_ms": 346.24305786564946,
+      "peak_memory_gb": 55.75655746459961,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 333.2763555611258,
+      "peak_memory_gb": 56.950853097,
+      "mfu": 0.045095912631980026,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.037449710571684745,
+    "memory_pct": 0.021419823724925274,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "2node_tp4dp2_rc",
+    "real": {
+      "step_time_ms": 439.5423741079867,
+      "peak_memory_gb": 23.97560691833496,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 455.3979593806564,
+      "peak_memory_gb": 24.954344045,
+      "mfu": 0.033002786031648676,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.036072939053594676,
+    "memory_pct": 0.04082220441796469,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "4node_tp4dp4_norc",
+    "real": {
+      "step_time_ms": 378.6570969969034,
+      "peak_memory_gb": 50.467384338378906,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 361.7874004327676,
+      "peak_memory_gb": 51.663394281,
+      "mfu": 0.020771040388237915,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.04455138091409863,
+    "memory_pct": 0.023698671098188198,
+    "pass": true
+  },
+  {
+    "model": "qwen3-8b",
+    "case": "4node_tp4dp4_rc",
+    "real": {
+      "step_time_ms": 472.07952896133065,
+      "peak_memory_gb": 18.685909271240234,
+      "oom": false
+    },
+    "sim": {
+      "step_time_ms": 483.90900425229813,
+      "peak_memory_gb": 19.666885229,
+      "mfu": 0.015529160731273847,
+      "oom": false
+    },
+    "real_oom": false,
+    "sim_oom": false,
+    "step_time_pct": 0.025058225500679283,
+    "memory_pct": 0.05249816551713642,
+    "pass": true
+  }
+]

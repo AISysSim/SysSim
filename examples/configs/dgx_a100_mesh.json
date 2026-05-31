@@ -1,8 +1,0 @@
-{
-  "topology_name": "dgx_a100",
-  "mesh": {
-    "shape": [2, 8],
-    "dimension_names": ["node", "gpu"],
-    "topology_types": ["infiniband", "nvlink"]
-  }
-}

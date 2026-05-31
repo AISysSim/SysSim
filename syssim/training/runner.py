@@ -6,6 +6,17 @@ import copy
 import math
 
 
+def dp_group_ranks(tp_size: int, dp_size: int) -> list[int]:
+    """Global ranks of the data-parallel group containing rank 0.
+
+    Megatron lays out ranks tensor-parallel-fastest, so the data-parallel replicas of a given
+    tensor-parallel shard are strided by ``tp_size``: ``[0, tp, 2*tp, ...]``. (Using
+    ``list(range(dp))`` instead selects the first ``dp`` *tensor-parallel* ranks, which share a
+    node — that mis-routes the inter-node DP collective onto the intra-node fabric.)
+    """
+    return [r * tp_size for r in range(dp_size)]
+
+
 def _simulate_on_hardware(trace, hardware):
     """Inject + DES + build report. Used by Trace.simulate_on AND by simulate()."""
     from .runtime import simulate_runtime, phase_breakdown_ms, collective_exposed_ms
@@ -13,7 +24,7 @@ def _simulate_on_hardware(trace, hardware):
         SimulationReport, aggregate_by_op_type, compute_efficiency, compute_model_flops_budget,
         build_bottlenecks,
     )
-    from .memory import grad_bytes_per_rank, param_bytes_per_rank
+    from .memory import grad_bytes_per_rank, param_bytes_per_rank, sharded_param_bytes_per_rank
     from .collectives import (
         inject_dp_gradient_allreduce, inject_optimizer_step,
         last_backward_op_per_pp_stage,
@@ -65,15 +76,19 @@ def _simulate_on_hardware(trace, hardware):
 
     pp = trace.parallelism.pipeline_model_parallel_size
     dp = trace.parallelism.data_parallel_size
-    dp_ranks = list(range(dp))
+    # DP replicas are strided by tp_size (Megatron's tp-fastest rank order), so the DP group
+    # spans nodes when DP does — timing the DP collective over the correct (inter-node) links.
+    dp_ranks = dp_group_ranks(trace.parallelism.tensor_model_parallel_size, dp)
     grad_bytes = grad_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
     pb = param_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
+    spb = sharded_param_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
 
     # Fused mixed-precision Adam is bandwidth-bound (one multi_tensor_apply kernel). Per bf16 param
     # (param_bytes = 2B): read+write fp32 master+m+v (12B/param = 6x bf16 -> 12*pb), read fp32 grad
     # (grad_bytes), write bf16 param (pb). The distributed optimizer shards the update by 1/dp.
     adam_bytes = 12 * pb + grad_bytes + pb
-    if getattr(trace.training, "use_distributed_optimizer", False) and dp > 1:
+    use_dist_opt = bool(getattr(trace.training, "use_distributed_optimizer", False)) and dp > 1
+    if use_dist_opt:
         adam_bytes //= dp
 
     if pp == 1:
@@ -82,7 +97,9 @@ def _simulate_on_hardware(trace, hardware):
             inject_dp_gradient_allreduce(
                 graph, total_grad_bytes=grad_bytes, dp_ranks=dp_ranks,
                 last_backward_op_name=last_backward,
-                estimated_time_ms=_estimate_dp_allreduce_ms(grad_bytes, dp_ranks, topology),
+                estimated_time_ms=_estimate_dp_comm_ms(
+                    grad_bytes=grad_bytes, sharded_param_bytes=spb, dp_ranks=dp_ranks,
+                    topology=topology, distributed_optimizer=use_dist_opt),
             )
             inject_optimizer_step(
                 graph, bytes_moved=adam_bytes,
@@ -96,7 +113,9 @@ def _simulate_on_hardware(trace, hardware):
             inject_dp_gradient_allreduce(
                 graph, total_grad_bytes=grad_bytes, dp_ranks=dp_ranks,
                 last_backward_op_name=last_name,
-                estimated_time_ms=_estimate_dp_allreduce_ms(grad_bytes, dp_ranks, topology),
+                estimated_time_ms=_estimate_dp_comm_ms(
+                    grad_bytes=grad_bytes, sharded_param_bytes=spb, dp_ranks=dp_ranks,
+                    topology=topology, distributed_optimizer=use_dist_opt),
             )
         for pp_rank in range(pp):
             anchor = last_per_stage.get(pp_rank)
@@ -198,6 +217,25 @@ def _estimate_dp_allreduce_ms(total_bytes, dp_ranks, topology):
     from ..network import allreduce, simulate
     ops = allreduce(ranks=list(dp_ranks), total_bytes=int(total_bytes), tag="dp_ar")
     return simulate(ops, topology).makespan * 1000.0
+
+
+def _estimate_dp_comm_ms(*, grad_bytes, sharded_param_bytes, dp_ranks, topology, distributed_optimizer):
+    """Data-parallel communication time (ms) via the flow-level network simulator.
+
+    Measured on GH200 (NCCL_DEBUG=COLL, qwen3-8b TP4·DP2): with the distributed optimizer (ZeRO-1)
+    the exposed inter-node DP comm is a single **bf16 all-gather of the TP-sharded parameters** — no
+    reduce-scatter appears on the wire, and the datatype is bf16 even though gradients accumulate in
+    fp32 (`grad_reduce_in_fp32`). The replicated embeddings/norms are not DP-gathered. Plain DDP
+    all-reduces the bf16 gradient over the DP group.
+    """
+    if len(dp_ranks) <= 1:
+        return 0.0
+    if distributed_optimizer:
+        return _estimate_collective_ms(collective_name="all_gather",
+                                       total_bytes=int(sharded_param_bytes),
+                                       ranks=dp_ranks, topology=topology)
+    return _estimate_collective_ms(collective_name="all_reduce", total_bytes=int(grad_bytes),
+                                   ranks=dp_ranks, topology=topology)
 
 
 def _estimate_collective_ms(*, collective_name, total_bytes, ranks, topology):

@@ -6,19 +6,6 @@ from syssim.training.runner import _estimate_dp_allreduce_ms, _estimate_collecti
 from syssim.network.topology import build_two_layer_multipath
 
 
-def _hw(*, gpus_per_node=8):
-    from syssim.training.spec import HardwareConfig
-    return HardwareConfig(
-        peak_tflops_mm=1979.0,
-        peak_tflops_math=989.0,
-        peak_memory_bandwidth_GBps=3350.0,
-        gpus_per_node=gpus_per_node,
-        topology={"type": "two_layer_multipath", "num_racks": 1, "nodes_per_rack": 1, "num_spines": 1,
-                  "intra_node_bandwidth_GBps": 900.0,
-                  "per_gpu_bandwidth_GBps": 200.0, "uplink_bandwidth_GBps": 200.0},
-    )
-
-
 def _topology():
     return build_two_layer_multipath(
         num_racks=1, nodes_per_rack=1, gpus_per_node=4, num_spines=1,
@@ -36,11 +23,67 @@ def test_dp_allreduce_routes_through_simulator():
     assert ms < 10
 
 
+def test_dp_comm_distributed_optimizer_is_param_allgather():
+    """ZeRO-1 DP comm = a bf16 all-gather of the TP-sharded params (measured on GH200: no
+    reduce-scatter on the wire, bf16). Plain DDP = all-reduce of the bf16 gradient."""
+    from syssim.training.runner import _estimate_dp_comm_ms, _estimate_collective_ms
+    topo = _topology()
+    g = int(1e9); spb = int(2e9); ranks = [0, 1, 2, 3]
+    zero = _estimate_dp_comm_ms(grad_bytes=g, sharded_param_bytes=spb, dp_ranks=ranks,
+                                topology=topo, distributed_optimizer=True)
+    ag = _estimate_collective_ms(collective_name="all_gather", total_bytes=spb, ranks=ranks, topology=topo)
+    assert abs(zero - ag) < 1e-9, (zero, ag)
+    plain = _estimate_dp_comm_ms(grad_bytes=g, sharded_param_bytes=spb, dp_ranks=ranks,
+                                 topology=topo, distributed_optimizer=False)
+    ar = _estimate_collective_ms(collective_name="all_reduce", total_bytes=g, ranks=ranks, topology=topo)
+    assert abs(plain - ar) < 1e-9, (plain, ar)
+
+
+def test_dp_comm_single_rank_is_zero():
+    """No DP communication when the DP group has one member."""
+    from syssim.training.runner import _estimate_dp_comm_ms
+    assert _estimate_dp_comm_ms(grad_bytes=int(1e9), sharded_param_bytes=int(1e9), dp_ranks=[0],
+                                topology=_topology(), distributed_optimizer=True) == 0.0
+
+
 def test_dp_allreduce_returns_zero_when_p_le_1():
     """Single-rank or zero-byte DP allreduce returns 0 immediately."""
     topology = _topology()
     assert _estimate_dp_allreduce_ms(int(1e9), [0], topology) == 0.0
     assert _estimate_dp_allreduce_ms(0, [0, 1, 2, 3], topology) == 0.0
+
+
+def test_dp_group_ranks_strided_by_tp():
+    """The DP group containing rank 0 is strided by tp_size (Megatron's tp-fastest rank order):
+    DP replicas of a tensor-parallel shard are tp_size apart, e.g. tp4 dp2 -> [0, 4]. Using
+    list(range(dp)) instead picks the first dp TENSOR-parallel ranks, which share a node."""
+    from syssim.training.runner import dp_group_ranks
+    assert dp_group_ranks(4, 2) == [0, 4]
+    assert dp_group_ranks(4, 4) == [0, 4, 8, 12]
+    assert dp_group_ranks(2, 4) == [0, 2, 4, 6]
+
+
+def test_dp_group_ranks_tp1_is_contiguous():
+    """tp=1 (e.g. single-node pure-DP): strided-by-1 == contiguous, unchanged from list(range(dp))."""
+    from syssim.training.runner import dp_group_ranks
+    assert dp_group_ranks(1, 4) == [0, 1, 2, 3]
+    assert dp_group_ranks(1, 1) == [0]
+
+
+def test_dp_allreduce_multinode_routes_internode_not_intranode():
+    """On a 2-node topology (4 GPUs/node), the tp4 dp2 DP group must span nodes, so the DP
+    all-reduce is timed over the SLOW inter-node fabric. list(range(dp))=[0,1] would (wrongly)
+    pick two same-node ranks and time it over fast intra-node NVLink."""
+    from syssim.training.runner import _estimate_dp_allreduce_ms, dp_group_ranks
+    from syssim.network import build_dimensional
+    topo = build_dimensional(
+        dims=["fully_connected", "switch"], size=[4, 2],
+        bandwidth=[450.0, 25.0], latency_ns=[12000.0, 3000.0], gpus_per_node=4,
+    )
+    intra = _estimate_dp_allreduce_ms(int(6e9), [0, 1], topo)               # same node (the bug)
+    inter = _estimate_dp_allreduce_ms(int(6e9), dp_group_ranks(4, 2), topo)  # [0,4], spans nodes
+    assert topo.gpus[0].node_id != topo.gpus[4].node_id, "ranks 0 and 4 should be on different nodes"
+    assert inter > 3 * intra, (intra, inter)
 
 
 def test_collective_dispatch_all_modeled_collectives():
@@ -111,9 +154,7 @@ def test_captured_tp_collectives_get_times_filled_in():
     hw = HardwareConfig(
         peak_tflops_mm=1979.0, peak_tflops_math=989.0,
         peak_memory_bandwidth_GBps=3350.0, gpus_per_node=1,
-        topology={"type": "two_layer_multipath", "num_racks": 4, "nodes_per_rack": 1, "num_spines": 1,
-                  "intra_node_bandwidth_GBps": 900.0,
-                  "per_gpu_bandwidth_GBps": 200.0, "uplink_bandwidth_GBps": 200.0},
+        topology={"dims": ["switch"], "size": [4], "bandwidth": [200.0], "latency": [1000.0]},
     )
     report = _simulate_on_hardware(t, hw)
     assert report.by_op_type_ms.get("collective", 0.0) > 0
@@ -134,13 +175,8 @@ def test_simulate_with_topology_runs_end_to_end(tmp_path):
         hardware=HardwareConfig(
             peak_tflops_mm=1979, peak_tflops_math=989,
             peak_memory_bandwidth_GBps=3350, gpus_per_node=1,
-            topology={
-                "type": "two_layer_multipath",
-                "num_racks": 1, "nodes_per_rack": 1, "num_spines": 1,
-                "intra_node_bandwidth_GBps": 900,
-                "per_gpu_bandwidth_GBps": 25.0,
-                "uplink_bandwidth_GBps": 200.0,
-            },
+            topology={"dims": ["fully_connected"], "size": [1],
+                      "bandwidth": [450.0], "latency": [0.0]},
         ),
         parallelism=ParallelismConfig(tp=1, dp=1),
         training=TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"),

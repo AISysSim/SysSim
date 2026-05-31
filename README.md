@@ -18,13 +18,6 @@ For in-depth technical architecture, see [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Quick Start
 
-### Requirements
-
-- Python 3.10+
-- PyTorch 2.6+ with CUDA support
-- A CUDA-capable GPU
-- [Megatron-Core](https://github.com/NVIDIA/Megatron-LM) for the training simulator (`syssim.simulate`)
-
 ### Installation
 
 ```bash
@@ -40,13 +33,13 @@ Three entry points cover the common needs — run a simulation, check memory, or
 ```python
 import syssim
 
-MODEL = "examples/configs/models/qwen3-1_7b.yaml"     # architecture YAML, ModelConfig, or HFModel
-HW    = "examples/configs/hardware/dgx_h100.yaml"     # hardware + topology YAML, or HardwareConfig
+MODEL = "examples/configs/models/qwen3-1_7b.yaml"             # architecture YAML, ModelConfig, or HFModel
+HW    = "examples/configs/hardware/isambard_gh200_4gpu.yaml"  # hardware + topology YAML, or HardwareConfig
 
 # 1) simulate — full step-time / MFU / memory / bottleneck report
 report = syssim.simulate(
     model=MODEL, hardware=HW,
-    parallelism=syssim.ParallelismConfig(tp=2, dp=4),   # tp / dp / pp / cp / sp
+    parallelism=syssim.ParallelismConfig(tp=2, dp=2),   # tp / dp / pp / cp / sp
     training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
 )
 print(report.step_time_ms, report.mfu, report.peak_memory_gb)
@@ -54,7 +47,7 @@ print(report.step_time_ms, report.mfu, report.peak_memory_gb)
 # 2) estimate_memory — per-GPU peak memory only (skips step-time estimation)
 mem = syssim.estimate_memory(
     model=MODEL, hardware=HW,
-    parallelism=syssim.ParallelismConfig(tp=2, dp=4),
+    parallelism=syssim.ParallelismConfig(tp=2, dp=2),
     training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
 )
 print(mem.peak_memory_gb, mem.pp_stage_memory_gb)       # per-GPU peak, per-PP-stage
@@ -62,7 +55,7 @@ print(mem.peak_memory_gb, mem.pp_stage_memory_gb)       # per-GPU peak, per-PP-s
 # 3) sweep — search a config axis, pick the best by a metric
 result = syssim.sweep(
     model=MODEL, hardware=HW,
-    parallelism=syssim.ParallelismConfig(dp=4),
+    parallelism=syssim.ParallelismConfig(),
     training=syssim.TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
     over={"parallelism.tp": [1, 2, 4]},
 )
@@ -75,17 +68,17 @@ print(best.inputs, best.metrics)
 ```bash
 # Full report (step time, MFU, memory, bottlenecks)
 syssim run examples/configs/models/qwen3-1_7b.yaml \
-    --hardware examples/configs/hardware/dgx_h100.yaml \
-    --tp 2 --dp 4 --micro-batch 1 --global-batch 8
+    --hardware examples/configs/hardware/isambard_gh200_4gpu.yaml \
+    --tp 2 --dp 2 --micro-batch 1 --global-batch 8
 
 # Memory only — peak memory without step-time estimation
 syssim memory examples/configs/models/qwen3-1_7b.yaml \
-    --hardware examples/configs/hardware/dgx_h100.yaml \
+    --hardware examples/configs/hardware/isambard_gh200_4gpu.yaml \
     --micro-batch 1 --global-batch 8
 
 # Sweep a config axis, pick the best by a metric
 syssim sweep examples/configs/models/qwen3-1_7b.yaml \
-    --hardware examples/configs/hardware/dgx_h100.yaml \
+    --hardware examples/configs/hardware/isambard_gh200_4gpu.yaml \
     --micro-batch 1 --global-batch 8 \
     --over parallelism.tp=1,2,4 --metric mfu
 ```
@@ -146,23 +139,23 @@ rms_norm_eps: 1.0e-6
 **Hardware YAML** — accelerator peaks + a per-dimension `topology:` block:
 
 ```yaml
-# examples/configs/hardware/dgx_h100.yaml
+# examples/configs/hardware/isambard_gh200_4gpu.yaml
 peak_tflops_mm: 1979           # tensor-unit peak (TFLOP/s)
 peak_tflops_math: 989          # vector/math peak (TFLOP/s)
 peak_memory_bandwidth_GBps: 3350
 peak_tflops_mm_fp8: 3958
 
-gpus_per_node: 8
-gpu_memory_GB: 80              # per-GPU HBM; enables OOM detection
+gpus_per_node: 4
+gpu_memory_GB: 96              # per-GPU HBM; enables OOM detection
 
 # Each dimension lays down links that the flow simulator times directly (no analytical
 # collective formula). `bandwidth` is the per-GPU UNI-directional aggregate; links are full-duplex,
 # and the per-peer link bandwidth is derived from it by the dimension's node degree.
 topology:
   dims:      [ fully_connected ]   # per dimension: fully_connected | switch | ring
-  size:      [ 8 ]                 # endpoints in this dimension (8 NVLink-meshed H100)
+  size:      [ 4 ]                 # endpoints in this dimension (4 NVLink-meshed GH200)
   bandwidth: [ 450 ]               # per-GPU uni-directional GB/s (900 NVLink bidir / 2)
-  latency:   [ 0 ]                 # link latency (ns)
+  latency:   [ 12000 ]             # link latency (ns)
 ```
 
 A multi-level fabric (e.g. intra-node NVLink + inter-node Slingshot) adds a second entry to each

@@ -8,7 +8,7 @@ def test_pp2_smoke():
     """PP=2 with a small model produces a finite report with both stages represented."""
     report = simulate(
         model="examples/configs/models/qwen3-1_7b.yaml",
-        hardware="examples/configs/hardware/2gpu_h100.yaml",
+        hardware="examples/configs/hardware/isambard_gh200_4gpu.yaml",
         parallelism=ParallelismConfig(pp=2),
         training=TrainingConfig(micro_batch=1, global_batch=2, dtype="bf16"),
     )
@@ -21,7 +21,7 @@ def test_pp2_collective_includes_p2p():
     """PP=2 trace has non-zero collective time (P2P transfers)."""
     report = simulate(
         model="examples/configs/models/qwen3-1_7b.yaml",
-        hardware="examples/configs/hardware/2gpu_h100.yaml",
+        hardware="examples/configs/hardware/isambard_gh200_4gpu.yaml",
         parallelism=ParallelismConfig(pp=2),
         training=TrainingConfig(micro_batch=1, global_batch=2, dtype="bf16"),
     )
@@ -32,7 +32,7 @@ def test_pp1_regression():
     """PP=1 still matches the single-process SPMD fixture after PP-aware changes."""
     report_pp1 = simulate(
         model="examples/configs/models/qwen3-1_7b.yaml",
-        hardware="examples/configs/hardware/single_h100.yaml",
+        hardware="examples/configs/hardware/isambard_gh200_4gpu.yaml",
         parallelism=ParallelismConfig(),
         training=TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"),
     )
@@ -47,7 +47,7 @@ def test_pp8_llama_70b_per_stage_memory_distribution():
     from syssim.training import estimate_memory
     breakdown = estimate_memory(
         model="examples/configs/models/qwen3-8b_hf.yaml",
-        hardware="examples/configs/hardware/dgx_h100.yaml",
+        hardware="examples/configs/hardware/isambard_gh200_2node.yaml",
         parallelism=ParallelismConfig(pp=8),
         training=TrainingConfig(micro_batch=1, global_batch=8, dtype="bf16"),
     )

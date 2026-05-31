@@ -6,11 +6,11 @@ from syssim.training import simulate, ParallelismConfig, TrainingConfig
 def test_tp2_dp4_smoke_does_not_crash():
     """TP=2 DP=4 (world=8) traces in single process and produces a finite report.
 
-    World size must equal `gpus_per_node` for single-node fixtures — DGX H100 has 8.
+    world=8 on the GH200 (4 GPUs/node) spans 2 nodes — the 2-node Isambard fixture.
     """
     report = simulate(
         model="examples/configs/models/qwen3-1_7b.yaml",
-        hardware="examples/configs/hardware/dgx_h100.yaml",
+        hardware="examples/configs/hardware/isambard_gh200_2node.yaml",
         parallelism=ParallelismConfig(tp=2, dp=4),
         training=TrainingConfig(micro_batch=1, global_batch=4, dtype="bf16"),
     )
@@ -24,7 +24,7 @@ def test_tp1_dp1_regression_matches_known_fixture():
     """PP=1 TP=1 DP=1 — most basic config, must produce identical output before and after."""
     report = simulate(
         model="examples/configs/models/qwen3-1_7b.yaml",
-        hardware="examples/configs/hardware/single_h100.yaml",
+        hardware="examples/configs/hardware/isambard_gh200_4gpu.yaml",
         parallelism=ParallelismConfig(),
         training=TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"),
     )

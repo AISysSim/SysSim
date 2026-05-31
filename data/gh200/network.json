@@ -1,0 +1,34 @@
+{
+  "measurements": {
+    "intra": {
+      "busBW_GBps": 331.380843351108,
+      "latency_floor_us": 60.54080128669739,
+      "n": 4,
+      "size_bytes": 268435456
+    },
+    "inter": {
+      "busBW_GBps": 22.952084109804314,
+      "latency_floor_us": 63.657599687576294,
+      "n": 2,
+      "size_bytes": 268435456
+    }
+  },
+  "topology": {
+    "dims": [
+      "fully_connected",
+      "switch"
+    ],
+    "size": [
+      4,
+      2
+    ],
+    "bandwidth": [
+      994,
+      23
+    ],
+    "latency": [
+      10090,
+      31829
+    ]
+  }
+}

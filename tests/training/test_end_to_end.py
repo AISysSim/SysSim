@@ -6,11 +6,11 @@ pytest.importorskip("megatron.core")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_qwen3_1_7b_single_h100(tmp_path):
+def test_qwen3_1_7b_single_gpu(tmp_path):
     import syssim
     report = syssim.simulate(
         model=str(REPO_ROOT / "examples/configs/models/qwen3-1_7b.yaml"),
-        hardware=str(REPO_ROOT / "examples/configs/hardware/single_h100.yaml"),
+        hardware=str(REPO_ROOT / "examples/configs/hardware/isambard_gh200_4gpu.yaml"),
         training=syssim.TrainingConfig(micro_batch=4, global_batch=4, dtype="bf16"),
         workdir=str(tmp_path),
     )
@@ -20,11 +20,11 @@ def test_qwen3_1_7b_single_h100(tmp_path):
 
 
 @pytest.mark.slow
-def test_qwen3_8b_tp4_dp2_dgx_h100(tmp_path):
+def test_qwen3_8b_tp4_dp2_2node(tmp_path):
     import syssim
     report = syssim.simulate(
         model=str(REPO_ROOT / "examples/configs/models/qwen3-8b.yaml"),
-        hardware=str(REPO_ROOT / "examples/configs/hardware/dgx_h100.yaml"),
+        hardware=str(REPO_ROOT / "examples/configs/hardware/isambard_gh200_2node.yaml"),
         parallelism=syssim.ParallelismConfig(tp=4, dp=2, sp=True),
         training=syssim.TrainingConfig(
             micro_batch=1, global_batch=16, dtype="bf16", recompute="selective",
@@ -40,7 +40,7 @@ def test_qwen3_8b_hf_matches_yaml_within_2pct(tmp_path):
     pytest.importorskip("megatron.bridge")
     import syssim
     common = dict(
-        hardware=str(REPO_ROOT / "examples/configs/hardware/dgx_h100.yaml"),
+        hardware=str(REPO_ROOT / "examples/configs/hardware/isambard_gh200_2node.yaml"),
         parallelism=syssim.ParallelismConfig(tp=4, dp=2, sp=True),
         training=syssim.TrainingConfig(
             micro_batch=1, global_batch=16, dtype="bf16", recompute="selective",
