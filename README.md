@@ -96,21 +96,28 @@ syssim sweep examples/configs/models/qwen3-1_7b.yaml \
 
 The default estimator is the **roofline** bound. For higher accuracy, attach a
 **calibrated** estimator (`TreeEstimator`) — the roofline times a learned residual, one
-regularized LightGBM tree per operator family (GEMM, attention, normalization,
-elementwise, reduction), with the bare roofline as the fallback for any uncalibrated op:
+regularized LightGBM tree per operator family (the in-context layer profile routes to GEMM,
+elementwise, and reduction), with the bare roofline as the fallback for any uncalibrated op:
 
 ```python
 from syssim.compute.tree_estimator import TreeEstimator
 hw = HardwareConfig(..., estimator=TreeEstimator.load("data/gh200", hw_info))
 ```
 
-Build the per-device model — measure real kernels on the target GPU, then fit the trees
-on CPU (both write under `data/<device>/`):
+Build the model for a GPU by profiling **real Megatron transformer layers** over the
+architecture/shape space in `syssim/profiling/default_spec.yaml`, then fitting the trees on CPU
+(`data/gh200/README.md` has the full reproduce recipe; profiling needs the GPU(s), calibration is
+CPU-only):
 
 ```bash
-syssim profile   --device gh200 --out data/gh200 --num-workers 4   # real kernels (target GPU; all families)
-syssim calibrate --device gh200 --data data/gh200                  # fit trees + gate (CPU; all families)
+# Profile real layers. --num-workers N spawns N workers, one pinned per GPU.
+syssim profile   --out data/gh200 --num-workers 4
+# Fit per-family residual trees from <data>/profile.parquet.
+syssim calibrate --data data/gh200 --hardware examples/configs/hardware/isambard_gh200_4gpu.yaml
 ```
+
+There is no model-file input to `profile` — the shape space is the committed spec. Preview the job
+list (layer configs × tensor-parallel shapes) without touching the GPU via `syssim profile --dry-run`.
 
 ---
 
@@ -136,7 +143,7 @@ tie_word_embeddings: true
 rms_norm_eps: 1.0e-6
 ```
 
-**Hardware YAML** — accelerator peaks + interconnect, with a `topology:` block:
+**Hardware YAML** — accelerator peaks + a per-dimension `topology:` block:
 
 ```yaml
 # examples/configs/hardware/dgx_h100.yaml
@@ -147,17 +154,19 @@ peak_tflops_mm_fp8: 3958
 
 gpus_per_node: 8
 gpu_memory_GB: 80              # per-GPU HBM; enables OOM detection
-inter_node_bandwidth_GBps: 200
-inter_node_latency_us: 5
 
+# Each dimension lays down links that the flow simulator times directly (no analytical
+# collective formula). `bandwidth` is the per-GPU UNI-directional aggregate; links are full-duplex,
+# and the per-peer link bandwidth is derived from it by the dimension's node degree.
 topology:
-  type: simple                 # simple | arbitrary | two_layer_multipath | fat_tree
-  num_nodes: 1
-  intra_node_bandwidth_GBps: 900
-  inter_node_bandwidth_GBps: 200
+  dims:      [ fully_connected ]   # per dimension: fully_connected | switch | ring
+  size:      [ 8 ]                 # endpoints in this dimension (8 NVLink-meshed H100)
+  bandwidth: [ 450 ]               # per-GPU uni-directional GB/s (900 NVLink bidir / 2)
+  latency:   [ 0 ]                 # link latency (ns)
 ```
 
-The number of nodes is derived from `world_size / gpus_per_node`. Bandwidth fields use neutral `intra_node_*` / `inter_node_*` names (not hardware-specific terms).
+A multi-level fabric (e.g. intra-node NVLink + inter-node Slingshot) adds a second entry to each
+list. The number of nodes is derived from `world_size / gpus_per_node`.
 
 ---
 

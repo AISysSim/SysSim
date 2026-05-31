@@ -216,7 +216,7 @@ class ModTracker:
         return fn
 
     def _fw_pre_hook(self, mod, input):
-        if torch._dynamo.eval_frame._is_in_optimized_module():
+        if getattr(torch._dynamo.eval_frame, "_is_in_optimized_module", lambda: False)():
             return
 
         name = self._get_mod_name(mod)
@@ -235,7 +235,7 @@ class ModTracker:
                 )
 
     def _fw_post_hook(self, mod, input, output):
-        if torch._dynamo.eval_frame._is_in_optimized_module():
+        if getattr(torch._dynamo.eval_frame, "_is_in_optimized_module", lambda: False)():
             return
 
         name = self._get_mod_name(mod)

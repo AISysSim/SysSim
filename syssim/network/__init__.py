@@ -9,7 +9,7 @@ from .simulator import Op, simulate, SimulationResult, solve_max_min_fair
 from .topology import (
     Gpu, Switch, Link, Topology,
     build_simple, build_arbitrary, build_two_layer_multipath, build_fat_tree,
-    build_topology_from_config,
+    build_dimensional, build_topology_from_config,
 )
 from .collectives import allreduce, allgather, reduce_scatter, broadcast
 from .load_balancer import (
@@ -21,7 +21,7 @@ __all__ = [
     "Gpu", "Switch", "Link", "Topology",
     "build_simple", "build_arbitrary",
     "build_two_layer_multipath", "build_fat_tree",
-    "build_topology_from_config",
+    "build_dimensional", "build_topology_from_config",
     "allreduce",
     "allgather",
     "reduce_scatter",

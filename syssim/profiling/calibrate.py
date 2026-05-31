@@ -32,7 +32,8 @@ def _categorical_codes() -> dict:
     return {
         "dtype": dict(_DTYPE_CODES),
         "op_subtype": {"native_layer_norm": 0, "gelu": 1, "silu": 2, "add": 3, "mul": 4,
-                       "_softmax": 5, "_log_softmax": 6, "_fused_rms_norm": 7},
+                       "_softmax": 5, "_log_softmax": 6, "_fused_rms_norm": 7,
+                       "copy_": 8, "masked_fill": 9, "masked_fill_": 10},
         "variant": {"_scaled_dot_product_flash_attention": 0,
                     "_scaled_dot_product_efficient_attention": 1,
                     "_scaled_dot_product_cudnn_attention": 2},
@@ -46,6 +47,13 @@ def _reconstruct_op(family: str, row: dict):
     dt = _META.get(row.get("dtype"), torch.float32)
     if family == "gemm":
         M, K, N = int(row["M"]), int(row["K"]), int(row["N"])
+        b = row.get("batch", 1)
+        batch = 1 if b is None or (isinstance(b, float) and b != b) else int(b)
+        if batch > 1:    # batched attention score matmul -> aten.bmm
+            return (aten.bmm,
+                    (torch.empty(batch, M, K, dtype=dt, device="meta"),
+                     torch.empty(batch, K, N, dtype=dt, device="meta")),
+                    torch.empty(batch, M, N, dtype=dt, device="meta"))
         return (aten.mm,
                 (torch.empty(M, K, dtype=dt, device="meta"),
                  torch.empty(K, N, dtype=dt, device="meta")),
@@ -72,6 +80,12 @@ def _reconstruct_op(family: str, row: dict):
         total = int(row["total_elements"])
         x = torch.empty(total, dtype=dt, device="meta")
         sub = row.get("op_subtype", "gelu")
+        if sub == "copy_":
+            return aten.copy_, (torch.empty(total, dtype=dt, device="meta"), x), x
+        if sub in ("masked_fill", "masked_fill_"):
+            mask = torch.empty(total, dtype=torch.bool, device="meta")
+            func = aten.masked_fill_ if sub == "masked_fill_" else aten.masked_fill
+            return func, (x, mask, 0.0), x
         func = {"gelu": aten.gelu, "silu": aten.silu, "add": aten.add, "mul": aten.mul}.get(sub, aten.gelu)
         args = (x, torch.empty(total, dtype=dt, device="meta")) if sub in ("add", "mul") else (x,)
         return func, args, x
@@ -141,13 +155,18 @@ def calibrate_family(family: str, *, data_dir: str, device: str, sfu_peak: float
         tr = va = np.arange(len(df))
 
     n = len(tr)
+    # op_subtype/dtype/variant are encoded as integer codes but are genuinely categorical;
+    # tell LightGBM so it splits per-op (not on code thresholds) — otherwise one residual is
+    # averaged across ops of different efficiency (e.g. mem-bound copy_/masked_fill lumped
+    # with compute-bound gelu/silu in elementwise).
+    cat_cols = [c for c in cols if c in F.CATEGORICAL]
     params = {"objective": "regression", "metric": "mae", "verbose": -1,
               "learning_rate": 0.05,
               "num_leaves": max(3, min(63, n // 4)),         # regularize to row count
               "min_data_in_leaf": max(1, min(20, n // 10))}
-    booster = lgb.train(params, lgb.Dataset(X.iloc[tr], label=y[tr]),
+    booster = lgb.train(params, lgb.Dataset(X.iloc[tr], label=y[tr], categorical_feature=cat_cols),
                         num_boost_round=300,
-                        valid_sets=[lgb.Dataset(X.iloc[va], label=y[va])],
+                        valid_sets=[lgb.Dataset(X.iloc[va], label=y[va], categorical_feature=cat_cols)],
                         callbacks=[lgb.early_stopping(50, verbose=False)])
     booster.save_model(os.path.join(data_dir, f"{family}_model.lgb"))
 

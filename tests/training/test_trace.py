@@ -32,9 +32,7 @@ def test_simulate_on_re_runs_predictor():
     # Manually set non-zero op time before simulate_on
     next(iter(t.graph.operators.values())).estimated_time_ms = 1.0
 
-    topology = {"type": "two_layer_multipath", "num_racks": 1, "nodes_per_rack": 1, "num_spines": 1,
-                "intra_node_bandwidth_GBps": 900.0,
-                "per_gpu_bandwidth_GBps": 200.0, "uplink_bandwidth_GBps": 200.0}
+    topology = {"dims": ["fully_connected"], "size": [1], "bandwidth": [900.0], "latency": [0.0]}
     hw_fast = HardwareConfig(peak_tflops_mm=4000, peak_tflops_math=2000,
                              peak_memory_bandwidth_GBps=5000, gpus_per_node=1,
                              topology=topology)

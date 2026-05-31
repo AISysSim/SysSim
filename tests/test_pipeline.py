@@ -99,9 +99,8 @@ def test_compose_pairs_p2p_send_recv():
     hw = HardwareConfig(
         peak_tflops_mm=1000, peak_tflops_math=1000,
         peak_memory_bandwidth_GBps=3000, gpus_per_node=8,
-        topology={"type": "two_layer_multipath", "num_racks": 1, "nodes_per_rack": 1, "num_spines": 1,
-                  "intra_node_bandwidth_GBps": 900.0,
-                  "per_gpu_bandwidth_GBps": 200.0, "uplink_bandwidth_GBps": 1600.0},
+        topology={"dims": ["fully_connected"], "size": [8],
+                  "bandwidth": [900.0], "latency": [1000.0]},
     )
     composed = compose_multi_rank_graph(
         per_stage_graphs={0: g0, 1: g1}, parallelism=p, hardware=hw,

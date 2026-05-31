@@ -115,16 +115,17 @@ def grad_bytes_per_rank(
 def optimizer_state_bytes_per_rank(
     m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
 ) -> int:
-    """Per-rank Adam optimizer state in bytes (mixed precision, no ZeRO).
+    """Per-rank Adam optimizer state in bytes (mixed precision).
 
-    Adam maintains fp32 master weights + momentum (m) + variance (v).
-    12 bytes per parameter: 4 (master) + 4 (m) + 4 (v).
-    ZeRO sharding is out of scope for v1.
+    Adam maintains fp32 master weights + momentum (m) + variance (v): 12 bytes per parameter
+    (4 master + 4 m + 4 v). Parameters shard across TP. With the distributed optimizer (ZeRO-1,
+    `tr.use_distributed_optimizer`), the optimizer state is additionally sharded across the
+    data-parallel group.
 
     Args:
         m: ModelConfig.
         p: ParallelismConfig.
-        tr: TrainingConfig (unused but part of signature).
+        tr: TrainingConfig (dtype + distributed-optimizer flag).
 
     Returns:
         Bytes per rank for optimizer state.
@@ -136,7 +137,10 @@ def optimizer_state_bytes_per_rank(
     lm_head = 0 if m.tie_word_embeddings else m.vocab_size * m.hidden_size
     norms = _norm_param_count(m) * m.num_layers
     replicated_elems = embed + final_norm + lm_head + norms
-    return (sharded_elems + replicated_elems) * 12
+    total = (sharded_elems + replicated_elems) * 12
+    if tr.use_distributed_optimizer:
+        total //= p.data_parallel_size
+    return total
 
 
 @dataclass

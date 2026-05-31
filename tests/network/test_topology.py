@@ -224,23 +224,14 @@ def test_build_arbitrary_resolve_path_cross_rack():
     assert path[3].capacity_GBps == 25.0    # dst uplink
 
 
-def test_build_arbitrary_yaml_dispatch():
-    """topology.type=arbitrary dispatches to build_arbitrary via build_topology_from_config."""
-    from syssim.training.spec import HardwareConfig
-    from syssim.network.topology import build_topology_from_config
-    hw = HardwareConfig(
-        peak_tflops_mm=1979.0, peak_tflops_math=989.0,
-        peak_memory_bandwidth_GBps=3350.0, gpus_per_node=2,
-        topology={
-            "type": "arbitrary",
-            "num_racks": 3,
-            "nodes_per_rack": 2,
-            "intra_node_bandwidth_GBps": 900.0,
-            "per_gpu_bandwidth_GBps": 25.0,
-            "rack_bandwidth_GBps": 100.0,
-        },
+def test_build_arbitrary():
+    """build_arbitrary constructs the rack/node/gpu hierarchy."""
+    from syssim.network.topology import build_arbitrary
+    topology = build_arbitrary(
+        num_racks=3, nodes_per_rack=2, gpus_per_node=2,
+        per_gpu_bandwidth_GBps=25.0, rack_bandwidth_GBps=100.0,
+        intra_node_bandwidth_GBps=900.0,
     )
-    topology = build_topology_from_config(hw)
     # 3 racks * 2 nodes * 2 gpus = 12 GPUs.
     assert len(topology.gpus) == 12
     assert len(topology.leaf_switches) == 3
@@ -294,24 +285,3 @@ def test_build_simple_cross_node_path():
     assert path[1].capacity_GBps == 200.0   # leaf -> root
     assert path[2].capacity_GBps == 200.0   # root -> leaf
     assert path[3].capacity_GBps == 200.0   # dst node NIC
-
-
-def test_build_simple_yaml_dispatch():
-    """topology.type=simple dispatches to build_simple via build_topology_from_config."""
-    from syssim.training.spec import HardwareConfig
-    from syssim.network.topology import build_topology_from_config
-    hw = HardwareConfig(
-        peak_tflops_mm=1979.0, peak_tflops_math=989.0,
-        peak_memory_bandwidth_GBps=3350.0, gpus_per_node=4,
-        topology={
-            "type": "simple",
-            "num_nodes": 2,
-            "intra_node_bandwidth_GBps": 900.0,
-            "inter_node_bandwidth_GBps": 200.0,
-        },
-    )
-    topology = build_topology_from_config(hw)
-    # 2 nodes * 4 gpus = 8 GPUs.
-    assert len(topology.gpus) == 8
-    assert len(topology.leaf_switches) == 2
-    assert len(topology.spine_switches) == 1

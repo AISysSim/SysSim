@@ -1,0 +1,17 @@
+# Qwen3-8B architecture (SysSim model-YAML schema, Megatron-field branch).
+# Single arch source: read directly by syssim and translated to the megatron-bridge
+# pretrain config by run_megatron.py so both sides train the same model.
+# Mirrors examples/configs/models/qwen3-8b.yaml.
+num_layers: 36
+hidden_size: 4096
+num_attention_heads: 32
+num_query_groups: 8            # GQA (8 KV heads)
+ffn_hidden_size: 12288
+seq_length: 4096
+max_position_embeddings: 40960
+vocab_size: 151936
+swiglu: true
+rope: true
+rope_theta: 1000000.0
+tie_word_embeddings: false
+rms_norm_eps: 1.0e-6

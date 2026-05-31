@@ -81,6 +81,8 @@ _VIEW_OPS = OrderedSet(
         aten.swapaxes,
         aten.swapdims,
         aten.chunk,
+        aten.slice,          # strided view — zero-copy, launches no kernel
+        aten.narrow,         # implemented as a slice — also a view
     ]
 )
 
@@ -96,6 +98,12 @@ _CREATE_OPS = OrderedSet(
         aten.arange,
         aten.ones_like,
         aten.zeros_like,
+        # Uninitialized allocations: reserve memory but move no data (no kernel).
+        aten.empty,
+        aten.empty_like,
+        aten.empty_strided,
+        aten.new_empty,
+        aten.new_empty_strided,
     ]
 )
 
@@ -248,6 +256,16 @@ def roofline(
 
     flat_args, _ = tree_flatten((args, kwargs))
     flat_outs, _ = tree_flatten(out)
+    # baddbmm(input, b1, b2, beta=0): the `input` accumulator is NOT read when beta==0
+    # (Megatron's explicit attention computes scores with beta=0), so don't charge its
+    # HBM read — otherwise the [b,S,S] scores buffer doubles the bound vs the real kernel.
+    if func_packet is aten.baddbmm and float(kwargs.get("beta", 1.0)) == 0.0 and len(args) >= 1:
+        flat_args = [a for a in flat_args if a is not args[0]]
+    # copy_(self, src): `self` is fully overwritten, not read — charge only the src read + the
+    # self write. Counting self as a read inflates the bound ~1.5x (the rail would then clamp the
+    # prediction up to that inflated anchor, discarding the learned sub-roofline efficiency).
+    if func_packet is aten.copy_ and len(args) >= 1:
+        flat_args = [a for a in flat_args if a is not args[0]]
     out_dtypes = {t.dtype for t in flat_outs
                   if isinstance(t, torch.Tensor) and t.dtype in _FLOAT_TYPES}
 

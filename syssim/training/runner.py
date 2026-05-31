@@ -64,9 +64,17 @@ def _simulate_on_hardware(trace, hardware):
         model_for_mem = _provider_to_model_config(provider)
 
     pp = trace.parallelism.pipeline_model_parallel_size
-    dp_ranks = list(range(trace.parallelism.data_parallel_size))
+    dp = trace.parallelism.data_parallel_size
+    dp_ranks = list(range(dp))
     grad_bytes = grad_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
     pb = param_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
+
+    # Fused mixed-precision Adam is bandwidth-bound (one multi_tensor_apply kernel). Per bf16 param
+    # (param_bytes = 2B): read+write fp32 master+m+v (12B/param = 6x bf16 -> 12*pb), read fp32 grad
+    # (grad_bytes), write bf16 param (pb). The distributed optimizer shards the update by 1/dp.
+    adam_bytes = 12 * pb + grad_bytes + pb
+    if getattr(trace.training, "use_distributed_optimizer", False) and dp > 1:
+        adam_bytes //= dp
 
     if pp == 1:
         if graph.operators:
@@ -76,11 +84,10 @@ def _simulate_on_hardware(trace, hardware):
                 last_backward_op_name=last_backward,
                 estimated_time_ms=_estimate_dp_allreduce_ms(grad_bytes, dp_ranks, topology),
             )
-            last_op_name = next(reversed(graph.operators))
             inject_optimizer_step(
-                graph, param_bytes_per_rank=pb,
+                graph, bytes_moved=adam_bytes,
                 peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
-                last_op_name=last_op_name,
+                last_op_name=next(reversed(graph.operators)),
             )
     else:
         # PP > 1: inject DP allreduce + optimizer per PP stage
@@ -91,19 +98,14 @@ def _simulate_on_hardware(trace, hardware):
                 last_backward_op_name=last_name,
                 estimated_time_ms=_estimate_dp_allreduce_ms(grad_bytes, dp_ranks, topology),
             )
-        # Optimizer step on each stage's last compute op as anchor.
-        # The injected allreduce is not tagged with pp_rank, so we anchor off
-        # the last compute op (last_per_stage). The allreduce is already wired
-        # to that same op, so both fire after it (acceptable for v1).
         for pp_rank in range(pp):
             anchor = last_per_stage.get(pp_rank)
-            if anchor is None:
-                continue
-            inject_optimizer_step(
-                graph, param_bytes_per_rank=pb,
-                peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
-                last_op_name=anchor,
-            )
+            if anchor is not None:
+                inject_optimizer_step(
+                    graph, bytes_moved=adam_bytes,
+                    peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
+                    last_op_name=anchor,
+                )
 
     res = simulate_runtime(graph)
     phases = phase_breakdown_ms(graph)
@@ -142,6 +144,9 @@ def _simulate_on_hardware(trace, hardware):
     report_grad_bytes = mem_by_type.get("Gradient", 0)
     report_opt_bytes = mem_by_type.get("Optstate", 0)
     report_act_bytes = mem_by_type.get("Activation", 0) + mem_by_type.get("Temp", 0)
+
+    # ZeRO-1 sharding of the optimizer state is already reflected in the tracked peak: the real
+    # distributed optimizer runs under the fake DP group in the trace and shards master/m/v by 1/dp.
     per_stage_mem = pp_stage_memory_gb
 
     bottlenecks = build_bottlenecks(
@@ -234,7 +239,9 @@ def _build_gpt_model_on_meta(provider, max_sequence_length: int, vocab_size: int
     from megatron.core.models.gpt import GPTModel
     from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_local_spec
     from .cuda_redirect import redirect_cuda_alloc_to_meta
+    from ._norm_meta import install_norm_meta_kernels
 
+    install_norm_meta_kernels()  # make apex + TE fused norm kernels fake-safe for tracing
     has_embedding = parallel_state.is_pipeline_first_stage()
     has_lm_head = parallel_state.is_pipeline_last_stage()
     layer_spec = get_gpt_layer_local_spec()
@@ -244,7 +251,15 @@ def _build_gpt_model_on_meta(provider, max_sequence_length: int, vocab_size: int
             vocab_size=vocab_size, max_sequence_length=max_sequence_length,
             pre_process=has_embedding, post_process=has_lm_head, parallel_output=True,
         )
-    return model.train()
+        model = model.train()
+        # Match the real run (run_megatron.py): wrap in Float16Module so the traced
+        # forward runs in bf16/fp16. Without this the trace stays fp32 — every mem-bound
+        # op (softmax/norm/bmm/dropout) counts 2x the bytes and the bf16-calibrated
+        # anchors no longer match the traced fp32 anchors.
+        if getattr(provider, "bf16", False) or getattr(provider, "fp16", False):
+            from megatron.core.transformer.module import Float16Module
+            model = Float16Module(provider, model)
+    return model
 
 
 def _vocab_size_for_tp(vocab_size: int, tp_size: int) -> int:
@@ -373,6 +388,7 @@ def _trace_rank(spawn_rank: int, model_arg, par_arg, tr_arg, hw_arg, out_path: s
             peak_tflops_mm_fp4=hw_arg.peak_tflops_mm_fp4,
             sfu_peak=hw_arg.sfu_peak,
             estimator=hw_arg.estimator,
+            calibrated_model=getattr(hw_arg, "calibrated_model", None),
         )
     tracer = OperatorGraphTracer(hw_info=hw_info)
     # Estimate per-microbatch memory first, on the freshly-built model, so the
@@ -384,6 +400,8 @@ def _trace_rank(spawn_rank: int, model_arg, par_arg, tr_arg, hw_arg, out_path: s
         data_iterator=make_lm_data_iterator(vocab, tr_arg.micro_batch_size, seq_length),
         seq_length=seq_length,
         micro_batch_size=tr_arg.micro_batch_size,
+        use_distributed_optimizer=getattr(tr_arg, "use_distributed_optimizer", False),
+        provider=provider,
     )
     # estimate_memory ran fwd/bwd on fake copies and restored the originals, so
     # these grads are already clean; null them defensively before the runtime trace.

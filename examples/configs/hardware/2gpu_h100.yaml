@@ -8,8 +8,9 @@ gpu_memory_GB: 80
 inter_node_bandwidth_GBps: 200
 inter_node_latency_us: 5
 
+# Two H100 in one node, NVLink-meshed (a `fully_connected` dimension at NVLink bandwidth).
 topology:
-  type: simple
-  num_nodes: 1
-  intra_node_bandwidth_GBps: 900
-  inter_node_bandwidth_GBps: 200
+  dims:      [ fully_connected ]
+  size:      [ 2 ]
+  bandwidth: [ 450 ]   # per-GPU uni-directional NVLink (900 bidir / 2)
+  latency:   [ 0 ]

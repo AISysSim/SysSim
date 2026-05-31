@@ -1,0 +1,16 @@
+# Llama-3-8B architecture (SysSim model-YAML schema, Megatron-field branch).
+# Single arch source: read directly by syssim and translated to the megatron-bridge
+# pretrain config by run_megatron.py so both sides train the same model.
+num_layers: 32
+hidden_size: 4096
+num_attention_heads: 32
+num_query_groups: 8            # GQA (8 KV heads)
+ffn_hidden_size: 14336
+seq_length: 8192
+max_position_embeddings: 8192
+vocab_size: 128256
+swiglu: true
+rope: true
+rope_theta: 500000.0
+tie_word_embeddings: false
+rms_norm_eps: 1.0e-5

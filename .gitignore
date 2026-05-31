@@ -76,3 +76,8 @@ PROGRESS.md
 
 # Agent artifacts (per CLAUDE.md)
 agent_space/
+
+# Cluster-local uv config + lock (Isambard-specific; keep out of the portable project)
+uv.toml
+uv.lock
+.venv

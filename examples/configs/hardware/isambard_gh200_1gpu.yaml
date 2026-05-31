@@ -1,0 +1,29 @@
+# Isambard-AI Phase 2 — NVIDIA GH200 Grace-Hopper, SINGLE GPU. SysSim hardware-YAML schema.
+# Source: https://docs.isambard.ac.uk/specs/#system-specifications-isambard-ai-phase-2
+#         + H100 / Slingshot-11 datasheets.
+#
+# INTERCONNECT (background; not exercised by a 1-GPU run):
+#   * Intra-node GPU<->GPU is NVLink — the four GH200 are directly NVLink-connected
+#     (point-to-point, NOT an NVSwitch), ~900 GB/s per GPU. Inter-node is Slingshot-11.
+#   Multi-GPU configs add those GPUs as a `fully_connected` (NVLink) dimension; a single GPU has no
+#   collectives, so the topology below is a degenerate 1-endpoint dimension.
+
+peak_tflops_mm: 1979              # H100 bf16/fp16 tensor-core peak (TFLOP/s)
+peak_tflops_math: 989             # H100 vector/math peak
+peak_memory_bandwidth_GBps: 3350  # H100 HBM3
+peak_tflops_mm_fp8: 3958
+
+gpus_per_node: 1
+gpu_memory_GB: 96                 # 96 GB HBM3 per GPU
+
+# Use the GH200-calibrated per-op compute model (TreeEstimator); compute peaks above match the
+# anchor it was calibrated against.
+calibrated_model: data/gh200
+
+# Ordered per-dimension network description; timing is produced by the flow simulator over the
+# links these dimensions lay down (no analytical collective formula). One GPU -> no collectives.
+topology:
+  dims:      [ fully_connected ]   # NVLink mesh (no switch); single GPU here
+  size:      [ 1 ]                 # endpoints in this dimension (single GPU)
+  bandwidth: [ 450 ]               # per-GPU UNI-DIRECTIONAL NVLink (900 bidir / 2); unused at 1 GPU
+  latency:   [ 53000 ]             # ns; unused at 1 GPU

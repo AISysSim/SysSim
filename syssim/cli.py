@@ -34,21 +34,26 @@ def _parser() -> argparse.ArgumentParser:
                        help="path=v1,v2,... (multiple allowed)")
     sweep.add_argument("--metric", default="mfu")
 
-    prof = sub.add_parser("profile")
-    prof.add_argument("--device", required=True)
-    prof.add_argument("--out", required=True)
-    prof.add_argument("--spec", default=None)
-    prof.add_argument("--families", default="all")
-    prof.add_argument("--reps", type=int, default=5)
+    # Profiling is IN-CONTEXT, LAYER-LEVEL only: build a real Megatron transformer layer for each
+    # model, sweep input/sharded shapes, and record every dispatched op's real GPU time into one
+    # profile.parquet. (There is no synthetic per-family microbenchmark path.)
+    prof = sub.add_parser(
+        "profile",
+        help="profile real Megatron layers over the spec's shape space -> <out>/profile.parquet")
+    prof.add_argument("--out", required=True, help="output data dir (writes <out>/profile.parquet)")
+    prof.add_argument("--spec", default=None,
+                      help="profiling spec YAML (architecture field lists + seq/token ranges); "
+                           "default = syssim/profiling/default_spec.yaml")
     prof.add_argument("--num-workers", type=int, default=1,
-                      help="GPU worker processes (multi-GPU profiling)")
-    prof.add_argument("--dry-run", action="store_true")
+                      help="GPU worker processes (1 = serial; N spawns a pool, each worker pins one "
+                           "GPU). Mirrors the original profiler's --num-workers.")
+    prof.add_argument("--dry-run", action="store_true",
+                      help="print the job list (layer configs x tensor-parallel) without profiling")
 
-    cal = sub.add_parser("calibrate")
-    cal.add_argument("--device", required=True)
-    cal.add_argument("--data", required=True)
-    cal.add_argument("--families", default="all")
-    cal.add_argument("--target", choices=["residual", "direct"], default="residual")
+    cal = sub.add_parser("calibrate", help="fit per-family residual trees from <data>/profile.parquet")
+    cal.add_argument("--data", required=True, help="data dir containing profile.parquet")
+    cal.add_argument("--hardware", required=True, help="hardware YAML")
+    cal.add_argument("--families", default="gemm,elementwise,reduction")
 
     return p
 
@@ -109,61 +114,72 @@ def main(argv: list[str] | None = None) -> int:
         print(f"best by {args.metric}: {best.inputs} → {best.metrics}")
         return 0
     if args.command == "profile":
+        from .profiling.measure_layer import spec_configs, profile_worklist
         from .profiling.spec import load_profiling_spec, DEFAULT_SPEC_PATH
-        from .profiling.catalog import worklist
-        spec = load_profiling_spec(args.spec or DEFAULT_SPEC_PATH)
-        all_fams = ["gemm", "attention", "normalization", "elementwise", "reduction"]
-        fams = all_fams if args.families == "all" else [f.strip() for f in args.families.split(",")]
-        wl = worklist(spec, families=fams, token_points=[256, 512, 1024, 2048, 4096, 8192])
-        by_fam: dict = {}
-        for it in wl:
-            by_fam[it["family"]] = by_fam.get(it["family"], 0) + 1
-        if args.dry_run:
-            print(f"work-list: {len(wl)} items {by_fam} (dry-run, no kernels)")
-            return 0
-        from .profiling.measure import measure_worklist
         import os
         import pandas as pd
-        os.makedirs(os.path.join(args.out, "prof"), exist_ok=True)
-        rows = measure_worklist(wl, num_workers=args.num_workers)
-        fam_rows: dict = {}
-        for r in rows:
-            fam_rows.setdefault(r["family"], []).append(r)
-        for fam, frows in fam_rows.items():
-            pd.DataFrame(frows).to_parquet(os.path.join(args.out, "prof", f"{fam}.parquet"))
-        print(f"measured {len(rows)}/{len(wl)} kernels ({len(wl) - len(rows)} skipped) "
-              f"across {sorted(fam_rows)} (num_workers={args.num_workers}) "
-              f"-> {args.out}/prof/<family>.parquet")
+
+        def powers_of_two(low, high):
+            values, value = [], 1
+            while value < low:
+                value *= 2
+            while value <= high:
+                values.append(value)
+                value *= 2
+            return values
+
+        spec = load_profiling_spec(args.spec or DEFAULT_SPEC_PATH)
+        # seq lengths from seq_len_range; batch is derived (tokens = batch * seq) and the
+        # (seq, batch) sweep is filtered to token_range inside the profiler; tensor-parallel shapes
+        # come from parallelism.tensor_parallel. There is no "model": the unit is the (op, shape).
+        seq_points = tuple(powers_of_two(int(spec.seq_len_range["min"]), int(spec.seq_len_range["max"])))
+        token_low, token_high = int(spec.token_range["min"]), int(spec.token_range["max"])
+        batch_points = tuple(powers_of_two(1, max(1, token_high // min(seq_points))))
+        tensor_parallel_degrees = tuple(spec.parallelism.get("tensor_parallel", [1, 2, 4, 8]))
+
+        # Each job builds one layer config at one tensor-parallel shape and times it.
+        configs = spec_configs(spec)
+        jobs = [(config, tensor_parallel)
+                for config in configs
+                for tensor_parallel in tensor_parallel_degrees
+                if config.num_attention_heads % tensor_parallel == 0
+                and config.num_query_groups % tensor_parallel == 0]
+        if args.dry_run:
+            print(f"dry run: {len(jobs)} layer-config jobs "
+                  f"({len(configs)} configs x tensor-parallel {list(tensor_parallel_degrees)}, "
+                  f"divisible only); seq points {list(seq_points)}")
+            return 0
+        print(f"profiling {len(jobs)} layer-config jobs with {args.num_workers} GPU worker(s)...",
+              file=sys.stderr)
+
+        profiled = profile_worklist(jobs, args.num_workers, seq_points, batch_points,
+                                    (token_low, token_high))
+        rows = [{"op": row["op"], "count": row["count"],
+                 "per_instance_ns": row["per_instance_ns"],
+                 "signature": json.dumps({"args": row["args"], "kwargs": row["kwargs"],
+                                          "out": row["out"]})}
+                for row in profiled]
+
+        # The same (op, shape) recurs across configs; keep one row per unique op-shape (median time).
+        frame = pd.DataFrame(rows)
+        if not frame.empty:
+            frame = (frame.groupby(["op", "signature"], as_index=False)
+                          .agg(count=("count", "first"),
+                               per_instance_ns=("per_instance_ns", "median")))
+        os.makedirs(args.out, exist_ok=True)
+        out_path = os.path.join(args.out, "profile.parquet")
+        frame.to_parquet(out_path)
+        print(f"profiled {len(frame)} unique (op, shape) rows from {len(jobs)} jobs -> {out_path}")
         return 0
     if args.command == "calibrate":
-        from .profiling.calibrate import calibrate_family
-        from .config import get_hardware_info
+        from .profiling.calibrate_layer import calibrate_from_parquet
         import os
-        # sfu_peak from the device default (gh200 -> H100 default); CPU-only, so
-        # get_hardware_info raises off-GPU -> fall back to the documented default.
-        try:
-            hw, _ = get_hardware_info()
-            sfu = hw.sfu_peak
-        except Exception:
-            sfu = 247.25
-        all_fams = ["gemm", "attention", "normalization", "elementwise", "reduction"]
-        fams = all_fams if args.families == "all" else [f.strip() for f in args.families.split(",")]
-        for fam in fams:
-            if not os.path.exists(os.path.join(args.data, "prof", f"{fam}.parquet")):
-                print(f"  {fam:14s} no parquet — skipped")
-                continue
-            m = calibrate_family(fam, data_dir=args.data, device=args.device,
-                                 sfu_peak=sfu, target=args.target)
-            # median is the headline accuracy gate (all families clear it well).
-            # The p95/bias tail gates are loosened because launch-floor-bound tiny
-            # ops (sub-~8 us, size-indistinguishable at the kernel-launch floor)
-            # carry irreducible jitter no timing method removes, yet are immaterial
-            # to step time — they dominate the elementwise tail without reflecting
-            # model quality on the material ops that drive runtime.
-            ok = (m["median_ape"] < 0.10 and m["p95_ape"] < 0.50
-                  and abs(m["mean_signed_log_error"]) < 0.10)
-            print(f"  {fam:14s} median={m['median_ape']:.3f} p95={m['p95_ape']:.3f} "
-                  f"bias={m['mean_signed_log_error']:+.3f}  gate={'PASS' if ok else 'FAIL'}")
+        families = [name.strip() for name in args.families.split(",")]
+        metrics = calibrate_from_parquet(
+            os.path.join(args.data, "profile.parquet"),
+            data_dir=args.data, hardware=args.hardware, families=families)
+        models = ", ".join(f"{name}_model.lgb" for name in metrics)
+        print(f"calibrated {len(metrics)} families -> {args.data} ({models} + manifest.json)")
         return 0
     return 1
 

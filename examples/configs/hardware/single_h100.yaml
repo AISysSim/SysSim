@@ -6,8 +6,9 @@ peak_tflops_mm_fp8: 3958
 gpus_per_node: 1
 gpu_memory_GB: 80
 
+# Single H100 — one GPU, no collectives. (NVLink would be a `fully_connected` dimension.)
 topology:
-  type: simple
-  num_nodes: 1
-  intra_node_bandwidth_GBps: 900
-  inter_node_bandwidth_GBps: 200
+  dims:      [ fully_connected ]
+  size:      [ 1 ]
+  bandwidth: [ 450 ]   # per-GPU uni-directional NVLink (900 bidir / 2); unused at 1 GPU
+  latency:   [ 0 ]
