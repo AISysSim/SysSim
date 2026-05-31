@@ -1,8 +1,0 @@
-{
-  "topology_name": "perlmutter",
-  "mesh": {
-    "shape": [4, 4],
-    "dimension_names": ["node", "gpu"],
-    "topology_types": ["slingshot", "nvlink"]
-  }
-}

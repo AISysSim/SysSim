@@ -1,7 +1,0 @@
-{
-  "min_size": 4096,
-  "max_size": 2147483648,
-  "num_runs": 10,
-  "lookahead": 5,
-  "pfact": 3.0
-}

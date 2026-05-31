@@ -1,0 +1,19 @@
+# Isambard-AI Phase 2 — NVIDIA GH200 (Hopper H100), FOUR nodes (16 GPUs). SysSim hardware-YAML schema.
+# Intra-node NVLink mesh + inter-node Slingshot-11 (one Cassini NIC @ 200 Gbps per GH200 superchip).
+
+peak_tflops_mm: 1979              # H100 bf16/fp16 tensor-core peak (TFLOP/s)
+peak_tflops_math: 989             # H100 vector/math peak
+peak_memory_bandwidth_GBps: 3350  # H100 HBM3
+peak_tflops_mm_fp8: 3958
+
+gpus_per_node: 4
+gpu_memory_GB: 96                 # 96 GB HBM3 per GPU (384 GB/node)
+
+calibrated_model: data/gh200
+
+# Topology: dim0 intra-node NVLink mesh, dim1 inter-node Slingshot. 4 GPUs/node x 4 nodes.
+topology:
+  dims:      [ fully_connected, switch ]
+  size:      [ 4, 4 ]
+  bandwidth: [ 450, 25 ]           # GB/s: NVLink per-GPU / Cassini NIC per-GPU
+  latency:   [ 12000, 3000 ]       # ns per ring hop

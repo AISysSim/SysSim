@@ -21,7 +21,7 @@ from syssim.training.spec import load_hardware_yaml
 
 BUNDLE = "data/gh200"
 MODEL = "examples/configs/models/qwen3-1_7b.yaml"
-HW_YAML = "examples/configs/hardware/single_h100.yaml"
+HW_YAML = "examples/configs/hardware/isambard_gh200_4gpu.yaml"
 
 
 @pytest.mark.skipif(not os.path.exists(os.path.join(BUNDLE, "manifest.json")),
@@ -30,9 +30,15 @@ def test_tree_vs_roofline_step_time_differs_and_finite():
     par = syssim.ParallelismConfig(tp=1, dp=1)
     tr = syssim.TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16")
 
-    base = syssim.simulate(model=MODEL, hardware=HW_YAML, parallelism=par, training=tr)
+    # The Isambard config sets calibrated_model (TreeEstimator by default); clear it for a
+    # pure-roofline baseline, then attach the TreeEstimator explicitly for the hybrid run so
+    # the two differ by exactly the learned residual.
+    hw_base = load_hardware_yaml(HW_YAML)
+    hw_base.calibrated_model = None
+    base = syssim.simulate(model=MODEL, hardware=hw_base, parallelism=par, training=tr)
 
     hw_cfg = load_hardware_yaml(HW_YAML)
+    hw_cfg.calibrated_model = None
     hw_info = HardwareInfo(
         peak_tflops_mm=hw_cfg.peak_tflops_mm,
         peak_tflops_math=hw_cfg.peak_tflops_math,

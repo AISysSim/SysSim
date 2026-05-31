@@ -307,10 +307,11 @@ def derive_num_nodes(parallelism: "ParallelismConfig", hardware: "HardwareConfig
             f"world_size ({world_size}) is not divisible by gpus_per_node ({gpn})"
         )
     num_nodes = world_size // gpn
-    if num_nodes > 1 and hardware.inter_node_bandwidth_GBps is None:
+    if num_nodes > 1 and hardware.topology is None and hardware.inter_node_bandwidth_GBps is None:
         raise ValueError(
-            f"inter_node_bandwidth_GBps required when num_nodes > 1 "
-            f"(derived num_nodes = {num_nodes})"
+            f"inter-node network spec required when num_nodes > 1 (derived num_nodes = {num_nodes}): "
+            f"provide a `topology` block (preferred; it specifies inter-node bandwidth) or the "
+            f"legacy inter_node_bandwidth_GBps"
         )
     return num_nodes
 

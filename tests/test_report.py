@@ -6,7 +6,7 @@ def test_simulation_report_has_per_stage_fields_pp1():
     from syssim.training import simulate, ParallelismConfig, TrainingConfig
     report = simulate(
         model="examples/configs/models/qwen3-1_7b.yaml",
-        hardware="examples/configs/hardware/single_h100.yaml",
+        hardware="examples/configs/hardware/isambard_gh200_4gpu.yaml",
         parallelism=ParallelismConfig(),
         training=TrainingConfig(micro_batch=1, global_batch=1, dtype="bf16"),
     )

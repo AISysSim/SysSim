@@ -456,7 +456,8 @@ def build_dimensional(*, dims, size, bandwidth, latency_ns,
     gpus = [Gpu(rank=r, node_id=r // gpn) for r in range(total)]
 
     fc_link: dict = {}       # (d, a, b) -> Link
-    sw_up: dict = {}         # (d, a) -> Link
+    sw_send: dict = {}       # (d, a) -> Link (a -> switch; full-duplex egress)
+    sw_recv: dict = {}       # (d, a) -> Link (switch -> a; full-duplex ingress)
     ring_links: dict = {}    # (d, group_key) -> [(a, b, Link)] in ring order
 
     for d in range(ndim):
@@ -494,9 +495,15 @@ def build_dimensional(*, dims, size, bandwidth, latency_ns,
             elif typ == "switch":
                 switches.append(Switch(name=f"sw_d{d}_{key}", kind="leaf"))
                 for a in members:
-                    lk = Link(capacity_GBps=bw, latency_us=lat_us)
-                    links.append(lk)
-                    sw_up[(d, a)] = lk
+                    # Full-duplex: independent send (a->switch) and recv (switch->a) directed links,
+                    # so a->b and b->a do not contend (real NICs send/recv independently, matching
+                    # the fully_connected convention above). Sharing one link would halve the rate.
+                    snd = Link(capacity_GBps=bw, latency_us=lat_us)
+                    rcv = Link(capacity_GBps=bw, latency_us=lat_us)
+                    links.append(snd)
+                    links.append(rcv)
+                    sw_send[(d, a)] = snd
+                    sw_recv[(d, a)] = rcv
             elif typ == "ring":
                 rl, m = [], len(members)
                 for i in range(m):
@@ -514,7 +521,7 @@ def build_dimensional(*, dims, size, bandwidth, latency_ns,
         if typ == "fully_connected":
             return [fc_link[(d, a, b)]]
         if typ == "switch":
-            return [sw_up[(d, a)], sw_up[(d, b)]]
+            return [sw_send[(d, a)], sw_recv[(d, b)]]
         rl = ring_links[(d, coord[a][:d] + coord[a][d + 1:])]
         order = [x[0] for x in rl]
         ia, ib, m = order.index(a), order.index(b), len(order)

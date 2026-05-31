@@ -94,6 +94,20 @@ def param_bytes_per_rank(
     return elements * _weight_dtype_bytes(tr)
 
 
+def sharded_param_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Bytes of the TP-sharded (per-layer attention + FFN) parameters on one rank.
+
+    This is the set the distributed optimizer (ZeRO-1) shards across the data-parallel group and
+    all-gathers each step; the replicated parameters (embeddings, lm_head, norms) are NOT
+    DP-gathered. Verified against the real NCCL all-gather size on GH200 (datatype bf16).
+    """
+    tp = p.tensor_model_parallel_size
+    sharded = (_attn_param_count(m) + _ffn_param_count(m)) * m.num_layers
+    return (sharded // tp) * _weight_dtype_bytes(tr)
+
+
 def grad_bytes_per_rank(
     m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
 ) -> int:
