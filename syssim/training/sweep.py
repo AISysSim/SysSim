@@ -34,15 +34,30 @@ class Sweep:
         return pd.DataFrame([{**r.inputs, **r.metrics} for r in self.rows])
 
 
-def _apply_path(par: ParallelismConfig, tr: TrainingConfig, path: str, value):
+def _apply_path(model, par: ParallelismConfig, tr: TrainingConfig, path: str, value):
     section, _, field = path.partition(".")
+    if section == "model":
+        # Model-level axis (e.g. "model.seq_length"): resolve the model YAML to a ModelConfig
+        # and override the one field. Lets the sweep vary architecture knobs that don't live on
+        # ParallelismConfig/TrainingConfig.
+        import dataclasses
+        from .spec import load_model_yaml, ModelConfig
+        mc = load_model_yaml(model) if isinstance(model, str) else model
+        if not isinstance(mc, ModelConfig):
+            raise ValueError(
+                f"sweeping {path!r} needs a model YAML path or ModelConfig, got {type(model).__name__}"
+            )
+        if field not in {f.name for f in dataclasses.fields(mc)}:
+            raise ValueError(f"unknown ModelConfig field in sweep path {path!r}: {field!r}")
+        return dataclasses.replace(mc, **{field: value}), par, tr
     if section == "parallelism":
         kwargs = {
             "tp": par.tensor_model_parallel_size, "dp": par.data_parallel_size,
             "sp": par.sequence_parallel, "cp": par.context_parallel_size,
+            "pp": par.pipeline_model_parallel_size,
         }
         kwargs[field] = value
-        return ParallelismConfig(**kwargs), tr
+        return model, ParallelismConfig(**kwargs), tr
     if section == "training":
         # Reconstruct using dtype to avoid the "exactly one active flag" problem
         # when overwriting a single flag without clearing the others.
@@ -63,7 +78,7 @@ def _apply_path(par: ParallelismConfig, tr: TrainingConfig, path: str, value):
             kwargs["dtype"] = value
         else:
             kwargs[field] = value
-        return par, TrainingConfig(**kwargs)
+        return model, par, TrainingConfig(**kwargs)
     raise ValueError(f"unknown sweep path section: {section!r}")
 
 
@@ -75,12 +90,12 @@ def sweep(*, model, hardware, parallelism=None, training=None, over: dict, workd
 
     rows: list[SweepRow] = []
     for combo in grid:
-        par, tr = parallelism, training
+        mdl, par, tr = model, parallelism, training
         chosen = {}
         for path, value in zip(paths, combo):
-            par, tr = _apply_path(par, tr, path, value)
+            mdl, par, tr = _apply_path(mdl, par, tr, path, value)
             chosen[path] = value
-        report = simulate(model=model, hardware=hardware,
+        report = simulate(model=mdl, hardware=hardware,
                           parallelism=par, training=tr, workdir=workdir)
         rows.append(SweepRow(
             inputs=chosen,
