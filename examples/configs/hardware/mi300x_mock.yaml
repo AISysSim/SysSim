@@ -1,0 +1,19 @@
+# MOCK AMD MI300X — illustrative spec-sheet peaks, NOT measured. There is no MI300X profiling data,
+# so SysSim has no calibrated cost model here and falls back to the roofline floor (note the absent
+# `calibrated_model:` key). Treat this as a template for bringing up a real accelerator:
+# profile on the device -> calibrate -> simulate.
+
+peak_tflops_mm: 1307              # MI300X FP16/BF16 matrix peak (TFLOP/s, dense)
+peak_tflops_math: 163             # vector/math peak
+peak_memory_bandwidth_GBps: 5300  # HBM3 (~5.3 TB/s)
+peak_tflops_mm_fp8: 2615          # FP8 matrix peak
+
+gpus_per_node: 8                  # MI300X platform: 8 GPUs / node
+gpu_memory_GB: 192                # 192 GB HBM3 per GPU
+
+# Intra-node Infinity Fabric mesh (illustrative bandwidth). No `calibrated_model:` -> roofline only.
+topology:
+  dims:      [ fully_connected ]
+  size:      [ 8 ]
+  bandwidth: [ 448 ]              # per-GPU Infinity Fabric, uni-directional (illustrative)
+  latency:   [ 12000 ]
