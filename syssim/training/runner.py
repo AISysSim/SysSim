@@ -378,9 +378,15 @@ def _trace_rank(spawn_rank: int, model_arg, par_arg, tr_arg, hw_arg, out_path: s
     (tp=0, dp=0, cp=0) slice, traces, writes graph to out_path.
     """
     import json
+    import logging
     import torch
     from megatron.core import parallel_state
     from megatron.core.tensor_parallel import model_parallel_cuda_manual_seed
+
+    # Fake-tensor tracing trips Megatron's "CPU RNG state changed within GPU RNG context" guard
+    # (RNG values don't affect a trace). Silence it in every trace process — including spawned ones,
+    # which don't inherit the parent kernel's logging config.
+    logging.getLogger("megatron.core.tensor_parallel.random").setLevel(logging.ERROR)
     from megatron.core.pipeline_parallel import get_forward_backward_func
     from .pipeline import pp_rank_to_global_rank
     from .dist_setup import init_fake_process_group, destroy_process_group
