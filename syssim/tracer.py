@@ -185,6 +185,57 @@ def _build_megatron_ddp_optimizer(model, provider, use_distributed_optimizer):
         return model, None
 
 
+def _inner_torch_optimizers(megatron_optimizer):
+    """Collect the inner ``torch.optim.Optimizer`` instances inside a (possibly chained,
+    possibly mixed-precision) Megatron optimizer wrapper. The inner optimizer holds the fp32
+    master params this rank owns (already ZeRO-sharded when the distributed optimizer is on),
+    keyed in ``.state`` with the Adam moments."""
+    import torch.optim as optim
+    found, seen = [], set()
+
+    def visit(o):
+        if o is None or id(o) in seen:
+            return
+        seen.add(id(o))
+        for sub in (getattr(o, "chained_optimizers", None) or []):
+            visit(sub)
+        inner = getattr(o, "optimizer", None)
+        if inner is not None and inner is not o:
+            visit(inner)
+        if isinstance(o, optim.Optimizer) and getattr(o, "param_groups", None):
+            found.append(o)
+
+    visit(megatron_optimizer)
+    return found
+
+
+def _ensure_adam_state_tracked(megatron_optimizer, mem_tracker):
+    """Make the Adam optimizer state (exp_avg / exp_avg_sq) present and charged as Optstate,
+    independent of whether the fused ``optimizer.step()`` ran under FakeTensor.
+
+    Some torch builds raise inside the fused/foreach Adam kernel on fake tensors, so the
+    ``step()`` above is swallowed and the moments are never allocated (Optstate=0, peak memory
+    under-counts by the whole optimizer state). Here we allocate the moments with ``zeros_like``
+    -- a pure shape op that is fake-safe on every torch -- only where they are missing, then run
+    the tracker's optimizer-state classification so the bytes land in the Optstate bucket. On a
+    torch where ``step()`` already created the moments this is a no-op (the moments exist and the
+    re-track is idempotent), so the validated footprint is unchanged. Sharding is automatic: the
+    moments mirror each inner optimizer's params, which are already this rank's ZeRO shard."""
+    from .training.mem_tracker import _MemRefType
+    for opt in _inner_torch_optimizers(megatron_optimizer):
+        for group in opt.param_groups:
+            for p in group.get("params", []):
+                if p is None:
+                    continue
+                st = opt.state[p]
+                if "exp_avg" not in st:
+                    st["exp_avg"] = torch.zeros_like(p, dtype=torch.float32)
+                    st["exp_avg_sq"] = torch.zeros_like(p, dtype=torch.float32)
+        try:
+            mem_tracker._track_optimizer_states(_MemRefType.OPT, opt)
+        except Exception as exc:
+            log.debug(f"optimizer-state tracking failed: {exc}")
+
 
 def _make_fake_inputs(
     inputs: Any,
@@ -960,6 +1011,10 @@ class OperatorGraphTracer:
                         megatron_optimizer.step()   # steady state: allocate Adam m/v pre-backward
                     except Exception:
                         pass
+                    # ...but the fused step raises under FakeTensor on some torch builds, leaving
+                    # the moments unallocated. Charge them deterministically so peak memory
+                    # includes the optimizer state on any torch (no-op when step() succeeded).
+                    _ensure_adam_state_tracked(megatron_optimizer, mem_tracker)
                 forward_backward_func(
                     forward_step_func=forward_step_func,
                     data_iterator=data_iterator,

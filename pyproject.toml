@@ -14,13 +14,13 @@ authors = [{name = "SysSim Contributors"}]
 dependencies = [
     "lightgbm",
     "megatron-bridge",
-    "megatron-core",
+    "megatron-core==0.13.1",
     "numpy",
     "pandas",
     "pyarrow",
     "pyyaml>=6.0",
     "scikit-learn",
-    "torch>=2.6",
+    "torch>=2.6,<2.12",
     "transformers",
 ]
 
