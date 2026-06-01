@@ -5,6 +5,12 @@ from __future__ import annotations
 import copy
 import math
 
+# The fake-tensor trace leaves this process's CUDA context dirty, so a SECOND in-process trace
+# faults (CUDA illegal access in Megatron's RNG setup). The first trace runs in-process (fast);
+# later traces are isolated in a fresh subprocess so simulate() is re-entrant (e.g. a notebook
+# that calls simulate() per config). Reset per process; the spawned child sees its own False.
+_PROCESS_HAS_TRACED = False
+
 
 def dp_group_ranks(tp_size: int, dp_size: int) -> list[int]:
     """Global ranks of the data-parallel group containing rank 0.
@@ -508,9 +514,14 @@ def trace(
 
     per_stage_paths = [os.path.join(workdir, f"pp_rank{r}.json") for r in range(pp)]
 
-    if pp == 1:
+    global _PROCESS_HAS_TRACED
+    if pp == 1 and not _PROCESS_HAS_TRACED:
+        # First trace in this process: run in-process (no spawn overhead).
+        _PROCESS_HAS_TRACED = True
         _trace_rank(0, model, parallelism, training, hardware, per_stage_paths[0])
     else:
+        # PP > 1, or a repeat trace in a process whose CUDA context is already dirty: isolate
+        # the trace in a fresh subprocess so simulate() stays re-entrant.
         import torch.multiprocessing as mp
         mp.spawn(
             _spawn_wrapper,
