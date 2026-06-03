@@ -17,6 +17,25 @@ def dp_group_ranks(tp_size: int, dp_size: int) -> list[int]:
     return [r * tp_size for r in range(dp_size)]
 
 
+def expert_dp_group_ranks(tp_size: int, dp_size: int, ep_size: int) -> list[int]:
+    """Global ranks of the expert-DATA-parallel group containing rank 0 (size dp/ep).
+
+    Expert grads reduce over the expert-DP group (size dp/ep), not the full DP group:
+    each expert lives on exactly one expert-parallel rank and is replicated only across
+    its dp/ep expert-DP peers. EP is carved from the DP grid, so the DP replicas (strided
+    by ``tp_size``: ``[0, tp, 2*tp, ...]``) split into ``ep`` consecutive expert shards;
+    the expert-DP peers of rank 0 are the first ``dp//ep`` of those strided DP ranks.
+
+    NOTE (deferred): the exact GLOBAL rank membership / node placement of this group
+    (whether the dp/ep replica stride lands intra- vs inter-node) wants a multi-rank
+    reference to validate link selection. This returns a volume-correct group of the
+    right SIZE (dp/ep) using the DP stride; membership placement is the deferred nuance.
+    """
+    dp_ranks = dp_group_ranks(tp_size, dp_size)
+    expert_dp_size = dp_size // ep_size if ep_size > 0 else dp_size
+    return dp_ranks[:expert_dp_size]
+
+
 def _simulate_on_hardware(trace, hardware):
     """Inject + DES + build report. Used by Trace.simulate_on AND by simulate()."""
     from .runtime import simulate_runtime, phase_breakdown_ms, collective_exposed_ms
@@ -24,7 +43,11 @@ def _simulate_on_hardware(trace, hardware):
         SimulationReport, aggregate_by_op_type, compute_efficiency, compute_model_flops_budget,
         build_bottlenecks,
     )
-    from .memory import grad_bytes_per_rank, param_bytes_per_rank, sharded_param_bytes_per_rank
+    from .memory import (
+        grad_bytes_per_rank, param_bytes_per_rank, sharded_param_bytes_per_rank,
+        dense_grad_bytes_per_rank, expert_grad_bytes_per_rank,
+        expert_sharded_param_bytes_per_rank,
+    )
     from .collectives import (
         inject_dp_gradient_allreduce, inject_optimizer_step,
         last_backward_op_per_pp_stage,
@@ -83,6 +106,26 @@ def _simulate_on_hardware(trace, hardware):
     pb = param_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
     spb = sharded_param_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
 
+    # Expert-parallel grad reduction (EP>1 only): routed-expert grads reduce over the
+    # expert-DP group (size dp/ep), the rest (dense_grad_bytes) over the full DP group
+    # (size dp). At EP=1 / dense, expert_grad_bytes is 0 and dense_grad_bytes == grad_bytes,
+    # so dp_grad_bytes == grad_bytes and the expert reduction is skipped -> byte-identical.
+    ep = trace.parallelism.expert_model_parallel_size
+    expert_grad_bytes = expert_grad_bytes_per_rank(
+        model_for_mem, trace.parallelism, trace.training)
+    dp_grad_bytes = (
+        dense_grad_bytes_per_rank(model_for_mem, trace.parallelism, trace.training)
+        if expert_grad_bytes > 0 else grad_bytes
+    )
+    expert_dp_ranks = expert_dp_group_ranks(
+        trace.parallelism.tensor_model_parallel_size, dp, ep)
+    # Distributed-optimizer path all-gathers TP-sharded params; split the gather
+    # volume the same way (dense over DP, expert over expert-DP). EP=1 -> expert=0,
+    # dense_spb == spb -> identical to the dense path.
+    expert_spb = expert_sharded_param_bytes_per_rank(
+        model_for_mem, trace.parallelism, trace.training)
+    dense_spb = spb - expert_spb if expert_grad_bytes > 0 else spb
+
     # Fused mixed-precision Adam is bandwidth-bound (one multi_tensor_apply kernel). Per bf16 param
     # (param_bytes = 2B): read+write fp32 master+m+v (12B/param = 6x bf16 -> 12*pb), read fp32 grad
     # (grad_bytes), write bf16 param (pb). The distributed optimizer shards the update by 1/dp.
@@ -95,12 +138,21 @@ def _simulate_on_hardware(trace, hardware):
         if graph.operators:
             last_backward = next(reversed(graph.operators))
             inject_dp_gradient_allreduce(
-                graph, total_grad_bytes=grad_bytes, dp_ranks=dp_ranks,
+                graph, total_grad_bytes=dp_grad_bytes, dp_ranks=dp_ranks,
                 last_backward_op_name=last_backward,
                 estimated_time_ms=_estimate_dp_comm_ms(
-                    grad_bytes=grad_bytes, sharded_param_bytes=spb, dp_ranks=dp_ranks,
+                    grad_bytes=dp_grad_bytes, sharded_param_bytes=dense_spb, dp_ranks=dp_ranks,
                     topology=topology, distributed_optimizer=use_dist_opt),
             )
+            if expert_grad_bytes > 0 and len(expert_dp_ranks) > 1:
+                inject_dp_gradient_allreduce(
+                    graph, total_grad_bytes=expert_grad_bytes, dp_ranks=expert_dp_ranks,
+                    last_backward_op_name=last_backward,
+                    estimated_time_ms=_estimate_dp_comm_ms(
+                        grad_bytes=expert_grad_bytes, sharded_param_bytes=expert_spb,
+                        dp_ranks=expert_dp_ranks, topology=topology,
+                        distributed_optimizer=use_dist_opt),
+                )
             inject_optimizer_step(
                 graph, bytes_moved=adam_bytes,
                 peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
@@ -256,7 +308,8 @@ def _estimate_collective_ms(*, collective_name, total_bytes, ranks, topology):
 
     from ..network import (
         allreduce as _ar, allgather as _ag,
-        reduce_scatter as _rs, broadcast as _bc, simulate as _sim,
+        reduce_scatter as _rs, broadcast as _bc,
+        all_to_all as _ata, simulate as _sim,
     )
     if name == "all_reduce":
         ops = _ar(ranks=list(ranks), total_bytes=int(total_bytes), tag="tp_ar")
@@ -267,6 +320,8 @@ def _estimate_collective_ms(*, collective_name, total_bytes, ranks, topology):
     elif name == "broadcast":
         ops = _bc(ranks=list(ranks), total_bytes=int(total_bytes),
                   root=ranks[0], tag="tp_bc")
+    elif name in ("all_to_all", "all_to_all_single"):
+        ops = _ata(ranks=list(ranks), total_bytes=int(total_bytes), tag="ep_a2a")
     else:
         return 0.0
     return _sim(ops, topology).makespan * 1000.0
@@ -282,7 +337,12 @@ def _build_gpt_model_on_meta(provider, max_sequence_length: int, vocab_size: int
     install_norm_meta_kernels()  # make apex + TE fused norm kernels fake-safe for tracing
     has_embedding = parallel_state.is_pipeline_first_stage()
     has_lm_head = parallel_state.is_pipeline_last_stage()
-    layer_spec = get_gpt_layer_local_spec()
+    # Pass experts through so Megatron builds the MoE layer when the provider has
+    # them. num_experts None => dense spec (unchanged from the dense path).
+    layer_spec = get_gpt_layer_local_spec(
+        num_experts=getattr(provider, "num_moe_experts", None),
+        moe_grouped_gemm=getattr(provider, "moe_grouped_gemm", False),
+    )
     with redirect_cuda_alloc_to_meta():
         model = GPTModel(
             config=provider, transformer_layer_spec=layer_spec,
@@ -307,6 +367,23 @@ def _vocab_size_for_tp(vocab_size: int, tp_size: int) -> int:
 def _provider_to_model_config(provider):
     """Adapter: extract a ModelConfig-shaped view from a Megatron TransformerConfig."""
     from .spec import ModelConfig
+    # Only surface MoE fields for an actual MoE provider. Megatron's TransformerConfig
+    # carries non-None defaults for moe_* even on dense models, so gate the whole MoE
+    # round-trip on num_moe_experts to keep the dense ModelConfig byte-identical.
+    num_experts = getattr(provider, "num_moe_experts", None)
+    if num_experts is not None:
+        moe_router_topk = getattr(provider, "moe_router_topk", None)
+        moe_ffn_hidden_size = getattr(provider, "moe_ffn_hidden_size", None)
+        moe_shared_expert_intermediate_size = getattr(
+            provider, "moe_shared_expert_intermediate_size", None)
+        moe_layer_freq = getattr(provider, "moe_layer_freq", None)
+        moe_token_dispatcher_type = getattr(provider, "moe_token_dispatcher_type", None)
+    else:
+        moe_router_topk = None
+        moe_ffn_hidden_size = None
+        moe_shared_expert_intermediate_size = None
+        moe_layer_freq = None
+        moe_token_dispatcher_type = None
     return ModelConfig(
         num_layers=provider.num_layers,
         hidden_size=provider.hidden_size,
@@ -320,6 +397,14 @@ def _provider_to_model_config(provider):
         rope=getattr(provider, "rotary_percent", 1.0) > 0,
         tie_word_embeddings=getattr(provider, "share_embeddings_and_output_weights", False),
         rms_norm_eps=getattr(provider, "layernorm_epsilon", 1e-6),
+        # MoE round-trip: carry expert info onto the memory path's ModelConfig view.
+        # Dense providers (num_moe_experts None) yield the same ModelConfig as today.
+        num_experts=num_experts,
+        moe_router_topk=moe_router_topk,
+        moe_ffn_hidden_size=moe_ffn_hidden_size,
+        moe_shared_expert_intermediate_size=moe_shared_expert_intermediate_size,
+        moe_layer_freq=moe_layer_freq,
+        moe_token_dispatcher_type=moe_token_dispatcher_type,
     )
 
 
@@ -388,12 +473,20 @@ def _trace_rank(spawn_rank: int, model_arg, par_arg, tr_arg, hw_arg, out_path: s
     torch.cuda.set_device(0)
 
     if not parallel_state.is_initialized():
+        # Expert parallelism only passed through when requested, so a dense run
+        # makes the exact same call as today (sizes default to 1).
+        expert_kwargs = {}
+        if par_arg.expert_model_parallel_size > 1:
+            expert_kwargs["expert_model_parallel_size"] = par_arg.expert_model_parallel_size
+        if par_arg.expert_tensor_parallel_size > 1:
+            expert_kwargs["expert_tensor_parallel_size"] = par_arg.expert_tensor_parallel_size
         parallel_state.initialize_model_parallel(
             tensor_model_parallel_size=par_arg.tensor_model_parallel_size,
             pipeline_model_parallel_size=par_arg.pipeline_model_parallel_size,
             virtual_pipeline_model_parallel_size=par_arg.virtual_pipeline_model_parallel_size,
             context_parallel_size=par_arg.context_parallel_size,
             create_gloo_process_groups=False,
+            **expert_kwargs,
         )
     model_parallel_cuda_manual_seed(42)
 
@@ -429,32 +522,37 @@ def _trace_rank(spawn_rank: int, model_arg, par_arg, tr_arg, hw_arg, out_path: s
             calibrated_model=getattr(hw_arg, "calibrated_model", None),
         )
     tracer = OperatorGraphTracer(hw_info=hw_info)
-    # Estimate per-microbatch memory first, on the freshly-built model, so the
-    # footprint reflects a clean state before the runtime pass runs.
-    tracer.estimate_memory(
-        model=model,
-        forward_backward_func=forward_backward_func,
-        forward_step_func=make_lm_forward_step(vocab),
-        data_iterator=make_lm_data_iterator(vocab, tr_arg.micro_batch_size, seq_length),
-        seq_length=seq_length,
-        micro_batch_size=tr_arg.micro_batch_size,
-        use_distributed_optimizer=getattr(tr_arg, "use_distributed_optimizer", False),
-        provider=provider,
-    )
-    # estimate_memory ran fwd/bwd on fake copies and restored the originals, so
-    # these grads are already clean; null them defensively before the runtime trace.
-    for p in model.parameters():
-        p.grad = None
-    graph = tracer.trace(
-        model=model,
-        forward_backward_func=forward_backward_func,
-        forward_step_func=make_lm_forward_step(vocab),
-        data_iterator=make_lm_data_iterator(vocab, tr_arg.micro_batch_size, seq_length),
-        num_microbatches=num_microbatches_per_rank,
-        seq_length=seq_length,
-        micro_batch_size=tr_arg.micro_batch_size,
-        forward_only=False,
-    )
+    # MoE expert path needs a tracer-scoped patch so SequentialMLP splits by the
+    # static row count (fake tensors carry shape, not data). No-op for dense
+    # providers (num_moe_experts None) -> dense trace stays byte-identical.
+    from .moe import moe_fake_trace_patches
+    with moe_fake_trace_patches(provider):
+        # Estimate per-microbatch memory first, on the freshly-built model, so the
+        # footprint reflects a clean state before the runtime pass runs.
+        tracer.estimate_memory(
+            model=model,
+            forward_backward_func=forward_backward_func,
+            forward_step_func=make_lm_forward_step(vocab),
+            data_iterator=make_lm_data_iterator(vocab, tr_arg.micro_batch_size, seq_length),
+            seq_length=seq_length,
+            micro_batch_size=tr_arg.micro_batch_size,
+            use_distributed_optimizer=getattr(tr_arg, "use_distributed_optimizer", False),
+            provider=provider,
+        )
+        # estimate_memory ran fwd/bwd on fake copies and restored the originals, so
+        # these grads are already clean; null them defensively before the runtime trace.
+        for p in model.parameters():
+            p.grad = None
+        graph = tracer.trace(
+            model=model,
+            forward_backward_func=forward_backward_func,
+            forward_step_func=make_lm_forward_step(vocab),
+            data_iterator=make_lm_data_iterator(vocab, tr_arg.micro_batch_size, seq_length),
+            num_microbatches=num_microbatches_per_rank,
+            seq_length=seq_length,
+            micro_batch_size=tr_arg.micro_batch_size,
+            forward_only=False,
+        )
 
     with open(out_path, "w") as f:
         json.dump({

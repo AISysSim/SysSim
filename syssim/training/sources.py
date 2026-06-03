@@ -73,6 +73,39 @@ def resolve_megatron_provider(
             ffn_hidden_size=model.ffn_hidden_size,
             attention_softmax_in_fp32=False,
         )
+        # MoE architecture — only forwarded when this is an MoE model. Dense models
+        # (num_experts is None) leave the provider untouched (byte-identical path).
+        if model.num_experts is not None:
+            provider.num_moe_experts = model.num_experts
+            provider.moe_ffn_hidden_size = model.moe_ffn_hidden_size
+            provider.moe_router_topk = model.moe_router_topk if model.moe_router_topk is not None else 1
+            provider.moe_shared_expert_intermediate_size = model.moe_shared_expert_intermediate_size
+            provider.moe_layer_freq = model.moe_layer_freq if model.moe_layer_freq is not None else 1
+            provider.moe_token_dispatcher_type = model.moe_token_dispatcher_type or "alltoall"
+            # gpt-oss experts are gated SwiGLU. The provider does not derive
+            # gated_linear_unit from swiglu, so set it explicitly here (MoE path
+            # only): without it the expert MLP traces as a non-gated 2-matmul FFN
+            # (fc1 width = moe_ffn), which undercounts the real gate+up projection
+            # and is inconsistent with the matmuls=3 analytical FLOP/param formulas.
+            # With it, fc1 is 2*moe_ffn wide and the traced expert FLOPs equal the
+            # SwiGLU budget exactly.
+            if model.swiglu:
+                import torch.nn.functional as _F
+                provider.gated_linear_unit = True
+                provider.activation_func = _F.silu
+            # Trace-safe INTERNAL flags (not user config): force the static drop_and_pad
+            # alltoall branch so the MoE forward traces under fake tensors with uniform
+            # per-expert load, and keep experts sequential (fake-safe, FLOP-counted natively).
+            provider.moe_expert_capacity_factor = 1.0
+            provider.moe_pad_expert_input_to_capacity = True
+            provider.moe_router_force_load_balancing = True
+            provider.moe_grouped_gemm = False
+            # Drop linear bias on the MoE path. With add_bias_linear, the expert MLP
+            # applies the router probs to the bias via an in-place `output += ...` on a
+            # tensor-parallel autograd view, which torch forbids during the fake-tensor
+            # backward trace (inplace-on-view of a custom Function output). Bias is a
+            # negligible-FLOP/param term; disabling it keeps the MoE forward traceable.
+            provider.add_bias_linear = False
     else:
         raise TypeError(f"unsupported model source: {type(model).__name__}")
 
@@ -80,6 +113,12 @@ def resolve_megatron_provider(
     provider.pipeline_model_parallel_size = 1
     provider.sequence_parallel = parallelism.sequence_parallel
     provider.context_parallel_size = parallelism.context_parallel_size
+    # Expert parallelism — only set when requested, so a dense run leaves these at
+    # the provider defaults (keeps the dense provider byte-identical to today).
+    if parallelism.expert_model_parallel_size > 1:
+        provider.expert_model_parallel_size = parallelism.expert_model_parallel_size
+    if parallelism.expert_tensor_parallel_size > 1:
+        provider.expert_tensor_parallel_size = parallelism.expert_tensor_parallel_size
     provider.bf16 = training.bf16
     provider.fp16 = training.fp16
     # pipeline_dtype is required by Megatron p2p when PP > 1 (recv_prev path).
@@ -110,7 +149,8 @@ def resolve_megatron_provider(
     # graph FakeTensor-safe and lets SysSim cost-model these ops directly. (apex/TE fused norms come
     # from the layer spec, not these flags, and are handled by _norm_meta meta kernels.)
     for _flag in ("masked_softmax_fusion", "bias_activation_fusion", "apply_rope_fusion",
-                  "bias_dropout_fusion", "persist_layer_norm", "gradient_accumulation_fusion"):
+                  "bias_dropout_fusion", "persist_layer_norm", "gradient_accumulation_fusion",
+                  "moe_permute_fusion", "moe_router_fusion"):
         if hasattr(provider, _flag):
             setattr(provider, _flag, False)
     if hasattr(provider, "finalize"):

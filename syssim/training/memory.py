@@ -26,10 +26,61 @@ def _attn_param_count(m: ModelConfig) -> int:
     return q_params + kv_params + o_params
 
 
+def _expert_param_count(m: ModelConfig) -> int:
+    """Per-layer parameter count of the routed experts ONLY (no router gate, no
+    shared expert). This is the portion that shards across the expert-parallel
+    group; the router gate and shared expert stay replicated. Returns 0 for a
+    dense model (``num_experts`` None)."""
+    if m.num_experts is None:
+        return 0
+    matmuls = 3 if m.swiglu else 2
+    return m.num_experts * matmuls * m.hidden_size * m.moe_ffn_hidden_size
+
+
 def _ffn_param_count(m: ModelConfig) -> int:
-    """Count FFN parameters (SwiGLU has 3 matrices, standard has 2)."""
-    h, f = m.hidden_size, m.ffn_hidden_size
+    """Per-layer FFN parameter count (EP=1 / replicated view).
+
+    Dense: SwiGLU has 3 matrices, standard has 2.
+
+    MoE (``num_experts`` set): every expert holds a full FFN, so the per-layer
+    FFN params are ``num_experts * matmuls * h * moe_ffn_hidden_size`` plus the
+    router gate (``h * num_experts``) and an optional shared expert
+    (``matmuls * h * moe_shared_expert_intermediate_size``). This is the EP=1
+    (fully-replicated) per-layer count; the per-rank byte functions divide the
+    routed-expert portion by ``expert_group_size`` at EP>1 via
+    ``_ffn_param_count_per_rank`` (this helper itself stays EP-invariant, so the
+    FLOP budget and the EP=1 byte path remain byte-identical). ``moe_layer_freq``
+    is honored only as a presence flag here: with the Phase-1 freq semantics
+    (freq>=1 => every layer is MoE for gpt-oss) all layers are MoE, matching the
+    per-layer convention of the dense path.
+    """
+    h = m.hidden_size
+    if m.num_experts is not None:
+        matmuls = 3 if m.swiglu else 2
+        experts = _expert_param_count(m)
+        router_gate = h * m.num_experts
+        shared = 0
+        if m.moe_shared_expert_intermediate_size:
+            shared = matmuls * h * m.moe_shared_expert_intermediate_size
+        return experts + router_gate + shared
+    f = m.ffn_hidden_size
     return 3 * h * f if m.swiglu else 2 * h * f
+
+
+def _ffn_param_count_per_rank(m: ModelConfig, p: ParallelismConfig) -> int:
+    """Per-rank, per-layer FFN parameter count with expert-parallel sharding.
+
+    At EP=1 (``expert_group_size == 1``) this equals ``_ffn_param_count(m)``
+    exactly (dense and EP=1 stay byte-identical). At EP>1 only the routed-expert
+    portion shards by ``expert_group_size`` (= ep*etp); the router gate and the
+    shared expert stay replicated across the expert-parallel group. Used by the
+    per-rank param/grad/optimizer byte functions so MemTracker-independent
+    analytical memory and the DP all-reduce/optimizer timing honor EP.
+    """
+    egs = p.expert_group_size
+    if m.num_experts is None or egs <= 1:
+        return _ffn_param_count(m)
+    return _ffn_param_count(m) - _expert_param_count(m) + _expert_param_count(m) // egs
 
 
 def _norm_param_count(m: ModelConfig) -> int:
@@ -84,7 +135,7 @@ def param_bytes_per_rank(
         Bytes per rank for weights.
     """
     tp = p.tensor_model_parallel_size
-    sharded = (_attn_param_count(m) + _ffn_param_count(m)) * m.num_layers
+    sharded = (_attn_param_count(m) + _ffn_param_count_per_rank(m, p)) * m.num_layers
     embed = m.vocab_size * m.hidden_size
     final_norm = m.hidden_size
     lm_head = 0 if m.tie_word_embeddings else m.vocab_size * m.hidden_size
@@ -104,8 +155,21 @@ def sharded_param_bytes_per_rank(
     DP-gathered. Verified against the real NCCL all-gather size on GH200 (datatype bf16).
     """
     tp = p.tensor_model_parallel_size
-    sharded = (_attn_param_count(m) + _ffn_param_count(m)) * m.num_layers
+    sharded = (_attn_param_count(m) + _ffn_param_count_per_rank(m, p)) * m.num_layers
     return (sharded // tp) * _weight_dtype_bytes(tr)
+
+
+def expert_sharded_param_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Per-rank bytes of the routed-expert TP-sharded params (the EP-sharded portion
+    the distributed optimizer all-gathers over the expert-DP group, size dp/ep).
+    Returns 0 for dense / EP=1. TP folds via expert_group_size (= ep*etp)."""
+    egs = p.expert_group_size
+    if m.num_experts is None or egs <= 1:
+        return 0
+    tp = p.tensor_model_parallel_size
+    return (_expert_param_count(m) // egs * m.num_layers // tp) * _weight_dtype_bytes(tr)
 
 
 def grad_bytes_per_rank(
@@ -124,6 +188,33 @@ def grad_bytes_per_rank(
         Bytes per rank for gradients.
     """
     return param_bytes_per_rank(m, p, tr)
+
+
+def expert_grad_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Per-rank gradient bytes of the routed experts ONLY (the EP-sharded portion).
+
+    At EP>1 these reduce over the expert-DATA-parallel group (size dp/ep), NOT the
+    full DP group. Returns 0 for a dense model or EP=1 (``expert_group_size <= 1``),
+    so the dense / EP=1 grad-reduction path is unchanged. The expert weights are TP-
+    sharded too (etp folds into expert_group_size); attention TP is excluded here.
+    """
+    egs = p.expert_group_size
+    if m.num_experts is None or egs <= 1:
+        return 0
+    per_rank_expert_elems = _expert_param_count(m) // egs * m.num_layers
+    return per_rank_expert_elems * _weight_dtype_bytes(tr)
+
+
+def dense_grad_bytes_per_rank(
+    m: ModelConfig, p: ParallelismConfig, tr: TrainingConfig,
+) -> int:
+    """Per-rank gradient bytes of everything that reduces over the FULL DP group:
+    attention, router gate, shared expert, norms, embeddings, lm_head — i.e. all
+    grad bytes EXCEPT the routed-expert portion. Equals ``grad_bytes_per_rank`` at
+    EP=1 / dense (``expert_grad_bytes_per_rank`` is 0 there)."""
+    return grad_bytes_per_rank(m, p, tr) - expert_grad_bytes_per_rank(m, p, tr)
 
 
 def optimizer_state_bytes_per_rank(
@@ -145,7 +236,7 @@ def optimizer_state_bytes_per_rank(
         Bytes per rank for optimizer state.
     """
     tp = p.tensor_model_parallel_size
-    sharded_elems = (_attn_param_count(m) + _ffn_param_count(m)) * m.num_layers // tp
+    sharded_elems = (_attn_param_count(m) + _ffn_param_count_per_rank(m, p)) * m.num_layers // tp
     embed = m.vocab_size * m.hidden_size
     final_norm = m.hidden_size
     lm_head = 0 if m.tie_word_embeddings else m.vocab_size * m.hidden_size

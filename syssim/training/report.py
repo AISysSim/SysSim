@@ -199,7 +199,20 @@ def compute_model_flops_budget(model, parallelism, training) -> ModelFlopsBudget
     f = model.ffn_hidden_size
 
     ffn_matmuls = 3 if model.swiglu else 2
-    fwd_ffn = 2 * b * s * h * f * ffn_matmuls
+    if model.num_experts is not None:
+        # MoE FFN forward FLOPs (uniform load, EP=1). The number of experts
+        # cancels: across E experts each seeing b*s*topk/E tokens, the total
+        # routed-FFN matmul work is 2*b*s*topk*h*moe_ffn*matmuls. Add the router
+        # gate (2*b*s*h*E) and, if present, an always-active shared expert. Every
+        # layer is MoE for gpt-oss (moe_layer_freq>=1), matching the per-layer
+        # convention used for the dense fwd_ffn term below.
+        topk = model.moe_router_topk if model.moe_router_topk is not None else 1
+        fwd_ffn = 2 * b * s * topk * h * model.moe_ffn_hidden_size * ffn_matmuls
+        fwd_ffn += 2 * b * s * h * model.num_experts  # router gate
+        if model.moe_shared_expert_intermediate_size:
+            fwd_ffn += 2 * b * s * h * model.moe_shared_expert_intermediate_size * ffn_matmuls
+    else:
+        fwd_ffn = 2 * b * s * h * f * ffn_matmuls
     fwd_proj = 2 * b * s * h * h * 4
     fwd_score = 2 * b * model.num_attention_heads * s * s * (h // model.num_attention_heads)
     fwd_av = fwd_score

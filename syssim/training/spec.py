@@ -30,6 +30,16 @@ class ModelConfig:
     tie_word_embeddings: bool = False
     rms_norm_eps: float = 1e-6
 
+    # MoE architecture (optional; None => dense, the discriminator). These are
+    # architecture fields and belong in the model YAML. Expert-parallelism sizes
+    # (EP/ETP) are NOT here — they are Python kwargs on ParallelismConfig.
+    num_experts: Optional[int] = None
+    moe_router_topk: Optional[int] = None
+    moe_ffn_hidden_size: Optional[int] = None
+    moe_shared_expert_intermediate_size: Optional[int] = None
+    moe_layer_freq: Optional[int] = None
+    moe_token_dispatcher_type: Optional[str] = None
+
     # HuggingFace branch
     huggingface: Optional[str] = None
     overrides: dict = field(default_factory=dict)
@@ -45,6 +55,10 @@ class ParallelismConfig:
     context_parallel_size: int = 1
     pipeline_model_parallel_size: int = 1
     virtual_pipeline_model_parallel_size: Optional[int] = None
+    # Expert parallelism — carved from the existing tp*dp*cp*pp grid, NOT a new
+    # multiplicative axis (world_size stays unchanged). Default 1 => dense behavior.
+    expert_model_parallel_size: int = 1
+    expert_tensor_parallel_size: int = 1
 
     def __init__(
         self,
@@ -55,12 +69,16 @@ class ParallelismConfig:
         cp: Optional[int] = None,
         pp: Optional[int] = None,
         vpp: Optional[int] = None,
+        ep: Optional[int] = None,
+        etp: Optional[int] = None,
         tensor_model_parallel_size: Optional[int] = None,
         data_parallel_size: Optional[int] = None,
         sequence_parallel: Optional[bool] = None,
         context_parallel_size: Optional[int] = None,
         pipeline_model_parallel_size: Optional[int] = None,
         virtual_pipeline_model_parallel_size: Optional[int] = None,
+        expert_model_parallel_size: Optional[int] = None,
+        expert_tensor_parallel_size: Optional[int] = None,
     ):
         # Resolve short or long names; long name wins if both given
         self.tensor_model_parallel_size = (
@@ -88,12 +106,22 @@ class ParallelismConfig:
             if virtual_pipeline_model_parallel_size is not None
             else vpp
         )
+        self.expert_model_parallel_size = (
+            expert_model_parallel_size if expert_model_parallel_size is not None
+            else (ep if ep is not None else 1)
+        )
+        self.expert_tensor_parallel_size = (
+            expert_tensor_parallel_size if expert_tensor_parallel_size is not None
+            else (etp if etp is not None else 1)
+        )
 
         for name, val in (
             ("tensor_model_parallel_size", self.tensor_model_parallel_size),
             ("data_parallel_size", self.data_parallel_size),
             ("context_parallel_size", self.context_parallel_size),
             ("pipeline_model_parallel_size", self.pipeline_model_parallel_size),
+            ("expert_model_parallel_size", self.expert_model_parallel_size),
+            ("expert_tensor_parallel_size", self.expert_tensor_parallel_size),
         ):
             if val < 1:
                 raise ValueError(f"{name} must be >= 1, got {val}")
@@ -106,12 +134,20 @@ class ParallelismConfig:
 
     @property
     def world_size(self) -> int:
+        # EP/ETP are carved from this grid, not multiplied in.
         return (
             self.tensor_model_parallel_size
             * self.data_parallel_size
             * self.context_parallel_size
             * self.pipeline_model_parallel_size
         )
+
+    @property
+    def expert_group_size(self) -> int:
+        # Sizes the all-to-all group / expert-param sharding only.
+        # TODO: enforce EP-vs-grid divisibility (EP*ETP must divide the dp*tp grid)
+        # when EP>1 is actually wired into the runtime (a later phase).
+        return self.expert_model_parallel_size * self.expert_tensor_parallel_size
 
 
 @dataclass
@@ -224,6 +260,8 @@ _MODEL_MEGATRON_FIELDS = frozenset({
     "num_layers", "hidden_size", "num_attention_heads", "num_query_groups", "kv_channels",
     "ffn_hidden_size", "seq_length", "max_position_embeddings", "vocab_size",
     "swiglu", "rope", "rope_theta", "tie_word_embeddings", "rms_norm_eps",
+    "num_experts", "moe_router_topk", "moe_ffn_hidden_size",
+    "moe_shared_expert_intermediate_size", "moe_layer_freq", "moe_token_dispatcher_type",
 })
 _MODEL_HF_FIELDS = frozenset({"huggingface", "overrides"})
 _MODEL_ALLOWED = _MODEL_MEGATRON_FIELDS | _MODEL_HF_FIELDS

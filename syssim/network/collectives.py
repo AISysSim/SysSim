@@ -78,6 +78,33 @@ def allgather(ranks: list[int], total_bytes: float, tag: str = "") -> list[Op]:
     return ops
 
 
+def all_to_all(ranks: list[int], total_bytes: float, tag: str = "") -> list[Op]:
+    """All-to-all over `ranks`. Returns n*(n-1) Op objects.
+
+    In an all-to-all every rank sends a distinct chunk to every OTHER rank.
+    `total_bytes` is the total bytes a single rank sends to all other ranks
+    combined (the per-rank send volume), so each of the n-1 destinations
+    receives `total_bytes / (n - 1)`.
+
+    Unlike the ring collectives, all n*(n-1) flows are CONCURRENT and
+    INDEPENDENT: there are no data-causality deps between them (deps=[] on
+    every Op). A single all-to-all is one round of simultaneous transfers;
+    per-link / per-uplink contention is resolved by the simulator's max-min
+    fair solver (same rationale stated at the top of this module).
+    """
+    n = len(ranks)
+    if n < 2 or total_bytes <= 0:
+        return []
+    chunk = total_bytes / (n - 1)
+    ops: list[Op] = []
+    for src in ranks:
+        for dst in ranks:
+            if src == dst:
+                continue
+            ops.append(Op(src=src, dst=dst, size=chunk, deps=[], tag=tag))
+    return ops
+
+
 def broadcast(
     ranks: list[int], total_bytes: float, root: int, tag: str = "",
 ) -> list[Op]:

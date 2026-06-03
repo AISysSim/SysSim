@@ -589,6 +589,7 @@ def _dist_noop_context(
             "all_reduce", "broadcast",
             "all_gather", "all_gather_into_tensor",
             "reduce_scatter", "reduce_scatter_tensor",
+            "all_to_all_single", "all_to_all",
             "barrier",
             "isend", "irecv", "send", "recv",
             "batch_isend_irecv",
@@ -661,6 +662,30 @@ def _dist_noop_context(
             async_op = kwargs.get("async_op", False)
             t = output if hasattr(output, "numel") else input_
             coll_name = _record_collective(name, t, kwargs.get("group"))
+            handle = _MockDistHandle()
+            handle._producer_collective = coll_name
+            if not async_op:
+                _record_sync_post(coll_name)
+            return handle
+        return fn
+
+    def _wrap_all_to_all_list(name):
+        """List-form all_to_all(output_tensor_list, input_tensor_list, ...): the
+        leading args are lists of tensors, not a single tensor. Record bytes from
+        the input list (what this rank sends)."""
+        def fn(output_tensor_list, input_tensor_list, *args, **kwargs):
+            async_op = kwargs.get("async_op", False)
+            total_bytes = sum(t.numel() * t.element_size() for t in input_tensor_list)
+
+            class _Sized:
+                def numel(self_inner):
+                    return total_bytes // (input_tensor_list[0].element_size()
+                                           if input_tensor_list else 1)
+
+                def element_size(self_inner):
+                    return input_tensor_list[0].element_size() if input_tensor_list else 1
+            sized = _Sized() if input_tensor_list else None
+            coll_name = _record_collective(name, sized, kwargs.get("group"))
             handle = _MockDistHandle()
             handle._producer_collective = coll_name
             if not async_op:
@@ -745,6 +770,8 @@ def _dist_noop_context(
         "all_gather_into_tensor":  _wrap_outofplace("all_gather_into_tensor"),
         "reduce_scatter":          _wrap_outofplace("reduce_scatter"),
         "reduce_scatter_tensor":   _wrap_outofplace("reduce_scatter_tensor"),
+        "all_to_all_single":       _wrap_outofplace("all_to_all_single"),
+        "all_to_all":              _wrap_all_to_all_list("all_to_all"),
         "barrier":                 _wrap_barrier("barrier"),
         "isend":                   _wrap_p2p("send", "dst"),
         "irecv":                   _wrap_p2p("recv", "src"),
