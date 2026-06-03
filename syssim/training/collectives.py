@@ -35,17 +35,22 @@ def inject_optimizer_step(
     bytes_moved: int,
     peak_memory_bandwidth_GBps: float,
     last_op_name: str,
+    bandwidth_efficiency: float = 1.0,
 ) -> None:
     """Inject one MATH op modeling the (fused, memory-bound) Adam parameter update.
 
     Real Megatron fuses Adam into a single multi_tensor_apply kernel, so it is bandwidth-bound:
-    time = bytes_moved / peak_bandwidth. The caller computes bytes_moved from the mixed-precision
-    state traffic (fp32 master+m+v read+write, fp32 grad read, bf16 param write). This is NOT traced
-    because the fused kernel has no FakeTensor impl and decomposes into ~100x-heavier per-param ops.
+    time = bytes_moved / (peak_bandwidth * bandwidth_efficiency). The caller computes bytes_moved
+    from the mixed-precision state traffic (fp32 master+m+v read+write, fp32 grad read, bf16 param
+    write). This is NOT traced because the fused kernel has no FakeTensor impl and decomposes into
+    ~100x-heavier per-param ops. `bandwidth_efficiency` (default 1.0 = spec peak) is the realized
+    fraction of peak HBM bandwidth for this optimizer-update phase, which also absorbs the
+    mixed-precision grad/master plumbing copies that share the phase; the caller reads it from the
+    calibration manifest (a measured device property), not the hardware YAML.
     """
     bytes_moved = int(bytes_moved)
-    time_ms = bytes_moved / (peak_memory_bandwidth_GBps * 1e9) * 1000.0 \
-              if peak_memory_bandwidth_GBps > 0 else 0.0
+    eff_bw = peak_memory_bandwidth_GBps * bandwidth_efficiency
+    time_ms = bytes_moved / (eff_bw * 1e9) * 1000.0 if eff_bw > 0 else 0.0
     idx = len(graph.operators)
     graph.add_operator(OperatorNode(
         name=f"optimizer_step_{idx}",
