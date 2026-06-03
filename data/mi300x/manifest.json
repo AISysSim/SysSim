@@ -1,0 +1,148 @@
+{
+  "device": "runpod_mi300x",
+  "lightgbm_version": "4.6.0",
+  "t_launch_ns": {
+    "gemm": 6209.199999998964,
+    "elementwise": 2443.700000000217,
+    "reduction": 6818.400000035763
+  },
+  "families": {
+    "gemm": "tree",
+    "elementwise": "tree",
+    "reduction": "tree"
+  },
+  "feature_columns": {
+    "gemm": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
+      "log_anchor_ns",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
+      "M",
+      "N",
+      "K",
+      "batched_dim",
+      "log_M",
+      "log_N",
+      "log_K",
+      "M_mod_8",
+      "M_mod_16",
+      "M_mod_64",
+      "M_mod_128",
+      "N_mod_8",
+      "N_mod_16",
+      "N_mod_64",
+      "N_mod_128",
+      "K_mod_8",
+      "K_mod_16",
+      "K_mod_64",
+      "K_mod_128"
+    ],
+    "elementwise": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
+      "log_anchor_ns",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
+      "total_elements",
+      "log_total_elements",
+      "num_operands",
+      "op_subtype",
+      "is_inplace"
+    ],
+    "reduction": [
+      "log_tensor_ns",
+      "log_fma_ns",
+      "log_sfu_ns",
+      "log_mem_ns",
+      "log_launch_floor_ns",
+      "log_anchor_ns",
+      "arithmetic_intensity",
+      "log_bytes_total",
+      "working_set_bytes",
+      "dtype",
+      "bits_per_element",
+      "input_volume",
+      "reduced_axis_size",
+      "num_non_reduced_elements",
+      "log_input_volume",
+      "op_subtype",
+      "is_causal_softmax"
+    ]
+  },
+  "metrics": {
+    "gemm": {
+      "median_ape": 0.06972469378895885,
+      "p95_ape": 0.2699470105303414,
+      "n_train": 5102,
+      "n_val": 736,
+      "mean_signed_log_error": -0.00473609822026157
+    },
+    "elementwise": {
+      "median_ape": 0.08105099983985779,
+      "p95_ape": 1.5183014532747896,
+      "n_train": 11446,
+      "n_val": 1868,
+      "mean_signed_log_error": 0.10988127041173591
+    },
+    "reduction": {
+      "median_ape": 0.06296121942598572,
+      "p95_ape": 0.22225699640372712,
+      "n_train": 4010,
+      "n_val": 267,
+      "mean_signed_log_error": 0.0428838671909631
+    }
+  },
+  "schema_version": "1.0.0-gemm",
+  "categorical_codes": {
+    "dtype": {
+      "bf16": 0,
+      "fp16": 1,
+      "fp8_e4m3": 2,
+      "fp8_e5m2": 3,
+      "fp32": 4
+    },
+    "op_subtype": {
+      "native_layer_norm": 0,
+      "gelu": 1,
+      "silu": 2,
+      "add": 3,
+      "mul": 4,
+      "_softmax": 5,
+      "_log_softmax": 6,
+      "_fused_rms_norm": 7,
+      "copy_": 8,
+      "masked_fill": 9,
+      "masked_fill_": 10,
+      "_log_softmax_backward_data": 11,
+      "_softmax_backward_data": 12,
+      "baddbmm": 13,
+      "bmm": 14,
+      "embedding_dense_backward": 15,
+      "gelu_backward": 16,
+      "mm": 17,
+      "native_dropout": 18,
+      "native_dropout_backward": 19,
+      "native_layer_norm_backward": 20,
+      "nll_loss_forward": 21,
+      "sum": 22
+    },
+    "variant": {
+      "_scaled_dot_product_flash_attention": 0,
+      "_scaled_dot_product_efficient_attention": 1,
+      "_scaled_dot_product_cudnn_attention": 2
+    }
+  }
+}
