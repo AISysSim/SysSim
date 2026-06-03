@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 48" width="350" height="120" role="img" aria-label="SysSim">
+  <g fill="none" stroke="#5b4ee5" stroke-width="3" stroke-linecap="round">
+    <path d="M10 14 h14 a6 6 0 0 1 0 12 h-8 a6 6 0 0 0 0 12 h14"/>
+  </g>
+  <text x="44" y="32" font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="26" font-weight="700" fill="#64748b">Sys<tspan fill="#5b4ee5">Sim</tspan></text>
+</svg>
