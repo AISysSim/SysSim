@@ -207,6 +207,12 @@ class HardwareConfig:
     topology: Optional[dict] = None
     estimator: Optional[Any] = None   # custom per-op Estimator (Python-only; not from YAML)
     calibrated_model: Optional[str] = None  # path to a calibrated TreeEstimator model dir (.lgb files)
+    # Realized fraction of peak HBM bandwidth for the bandwidth-bound optimizer-update phase (fused
+    # Adam + the mixed-precision grad/master plumbing copies that share that phase). 1.0 = spec peak
+    # (default; all existing configs unchanged). Lower it for devices whose optimizer phase runs
+    # below peak (e.g. SR-IOV / virtualized GPUs). Scopes ONLY the injected optimizer op — the
+    # compute roofline / calibration anchor (peak_memory_bandwidth_GBps) is left untouched.
+    optimizer_bandwidth_efficiency: float = 1.0
 
     def __post_init__(self) -> None:
         for name, val in (
@@ -218,6 +224,10 @@ class HardwareConfig:
                 raise ValueError(f"{name} must be positive, got {val}")
         if self.gpus_per_node < 1:
             raise ValueError(f"gpus_per_node must be >= 1, got {self.gpus_per_node}")
+        if not 0 < self.optimizer_bandwidth_efficiency <= 1:
+            raise ValueError(
+                f"optimizer_bandwidth_efficiency must be in (0, 1], got "
+                f"{self.optimizer_bandwidth_efficiency}")
 
 
 _MODEL_MEGATRON_FIELDS = frozenset({
@@ -271,6 +281,7 @@ _HARDWARE_ALLOWED = frozenset({
     "inter_node_bandwidth_GBps", "inter_node_latency_us",
     "topology",
     "calibrated_model",
+    "optimizer_bandwidth_efficiency",
 })
 
 

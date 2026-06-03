@@ -16,6 +16,13 @@ peak_tflops_mm_fp8: 2615          # FP8 matrix peak — calibration anchor
 # roofline floor with the measured-anchored LightGBM TreeEstimator.
 calibrated_model: data/mi300x
 
+# Realized HBM-bandwidth fraction for the bandwidth-bound optimizer-update phase. SysSim models the
+# fused Adam step as bytes_moved / (peak_bw * eff); at spec peak (eff=1.0) that gave 9 ms, but the
+# measured optimizer phase on this SR-IOV MI300X is ~98 ms (fused Adam 45 ms + the fp32 grad-reduce
+# / bf16 master-cast memcpy 53 ms that share the phase) -> ~9% of the 5300 GB/s peak. Calibrated
+# from run_megatron.py SYSSIM_PROFILE on Qwen3-1.7B; scopes ONLY the optimizer op, not the roofline.
+optimizer_bandwidth_efficiency: 0.093
+
 gpus_per_node: 1                  # RunPod instance exposes ONE SR-IOV MI300X (not the 8-GPU OAM node)
 gpu_memory_GB: 192                # 192 GiB HBM3 (device reports ~206 GB == 192 GiB)
 

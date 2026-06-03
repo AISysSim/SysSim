@@ -111,6 +111,7 @@ def _simulate_on_hardware(trace, hardware):
                 graph, bytes_moved=adam_bytes,
                 peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
                 last_op_name=next(reversed(graph.operators)),
+                bandwidth_efficiency=hardware.optimizer_bandwidth_efficiency,
             )
     else:
         # PP > 1: inject DP allreduce + optimizer per PP stage
@@ -130,6 +131,7 @@ def _simulate_on_hardware(trace, hardware):
                     graph, bytes_moved=adam_bytes,
                     peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
                     last_op_name=anchor,
+                    bandwidth_efficiency=hardware.optimizer_bandwidth_efficiency,
                 )
 
     res = simulate_runtime(graph)
