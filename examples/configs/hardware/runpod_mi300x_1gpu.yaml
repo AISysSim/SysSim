@@ -1,0 +1,28 @@
+# AMD MI300X — RunPod single-GPU instance (SR-IOV, gfx942). REAL config: backed by on-device
+# profiling (data/mi300x/profile.parquet, 23842 op-shape rows) + LightGBM calibration, NOT a
+# spec-sheet mock. Replaces examples/configs/hardware/mi300x_mock.yaml.
+#
+# Compute peaks below are AMD MI300X spec peaks AND the roofline anchor the calibrated model was
+# fit against (calibrate --hardware used these exact values). The TreeEstimator predicts
+# roofline(peaks) * exp(residual); the residual was learned relative to THIS anchor, so these
+# four peak_* values MUST NOT be changed without re-running `syssim calibrate`.
+
+peak_tflops_mm: 1307              # MI300X FP16/BF16 matrix peak (TFLOP/s, dense) — calibration anchor
+peak_tflops_math: 163             # vector/math peak — calibration anchor
+peak_memory_bandwidth_GBps: 5300  # HBM3 (~5.3 TB/s) — calibration anchor
+peak_tflops_mm_fp8: 2615          # FP8 matrix peak — calibration anchor
+
+# Calibrated per-op cost model fit from REAL MI300X profiling on this instance. Replaces the
+# roofline floor with the measured-anchored LightGBM TreeEstimator.
+calibrated_model: data/mi300x
+
+gpus_per_node: 1                  # RunPod instance exposes ONE SR-IOV MI300X (not the 8-GPU OAM node)
+gpu_memory_GB: 192                # 192 GiB HBM3 (device reports ~206 GB == 192 GiB)
+
+# Single-GPU instance: no intra-node interconnect is exercised (tp/dp/pp all fit on 1 GPU only).
+# A trivial 1-element topology keeps the schema valid; bandwidth/latency are unused at size 1.
+topology:
+  dims:      [ fully_connected ]
+  size:      [ 1 ]
+  bandwidth: [ 448 ]              # per-GPU Infinity Fabric (illustrative; unused at size 1)
+  latency:   [ 12000 ]
