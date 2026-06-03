@@ -27,3 +27,6 @@ dependencies = [
 [tool.pytest.ini_options]
 markers = ["slow: marks integration tests that spawn subprocesses or download HF configs"]
 addopts = "-m 'not slow'"
+
+[tool.setuptools.packages.find]
+include = ["syssim*"]
