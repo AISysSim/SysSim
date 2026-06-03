@@ -868,7 +868,7 @@ class OperatorGraphTracer:
         forward_only: bool = False,
     ) -> OperatorGraph:
         """Run `forward_backward_func(...)` under FakeTensorMode + TorchDispatchMode."""
-        if torch.version.cuda is None:
+        if torch.version.cuda is None and getattr(torch.version, "hip", None) is None:
             raise RuntimeError(
                 f"syssim tracer needs a CUDA build of PyTorch, but a CPU-only build is "
                 f"installed (torch {torch.__version__}). Fake CUDA tensors require a CUDA "
