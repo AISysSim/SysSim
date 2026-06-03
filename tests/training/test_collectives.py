@@ -44,3 +44,36 @@ def test_inject_optimizer_step():
     # Fused Adam is bandwidth-bound: 50 MB moved / 3350 GB/s ≈ 0.01493 ms
     assert optim[0].estimated_time_ms == pytest.approx(50_000_000 / 3350e9 * 1000, rel=1e-6)
     assert "dp_ar" in optim[0].predecessors
+
+
+def test_inject_optimizer_step_bandwidth_efficiency_scales_time():
+    # bandwidth_efficiency < 1 (sub-peak optimizer phase, e.g. SR-IOV) divides the realized
+    # bandwidth, so the op time scales by 1 / efficiency vs the spec-peak default.
+    def opt_time(eff):
+        g = OperatorGraph()
+        g.add_operator(OperatorNode(name="bwd", op_type=OperatorType.GEMM, estimated_time_ms=1.0))
+        inject_optimizer_step(
+            g, bytes_moved=50_000_000, peak_memory_bandwidth_GBps=3350.0,
+            last_op_name="bwd", bandwidth_efficiency=eff,
+        )
+        return next(op.estimated_time_ms for op in g.operators.values()
+                   if op.config.get("phase") == "optimizer")
+
+    base = opt_time(1.0)
+    assert opt_time(0.5) == pytest.approx(base / 0.5, rel=1e-6)
+    assert opt_time(0.1) == pytest.approx(base / 0.1, rel=1e-6)
+    # default keeps spec-peak behavior (backward compatible)
+    assert base == pytest.approx(50_000_000 / 3350e9 * 1000, rel=1e-6)
+
+
+def test_optimizer_bw_efficiency_reads_manifest(tmp_path):
+    # The efficiency lives in the calibration manifest (NOT the hardware YAML); the runner reads it
+    # from <calibrated_model>/manifest.json, defaulting to 1.0 when absent/missing/uncalibrated.
+    from syssim.training.runner import _optimizer_bw_efficiency
+    import json
+    assert _optimizer_bw_efficiency(None) == 1.0                     # uncalibrated
+    assert _optimizer_bw_efficiency(str(tmp_path)) == 1.0            # no manifest file
+    (tmp_path / "manifest.json").write_text(json.dumps({"families": {}}))
+    assert _optimizer_bw_efficiency(str(tmp_path)) == 1.0            # key absent
+    (tmp_path / "manifest.json").write_text(json.dumps({"optimizer_bandwidth_efficiency": 0.113}))
+    assert _optimizer_bw_efficiency(str(tmp_path)) == pytest.approx(0.113)

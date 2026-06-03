@@ -144,5 +144,6 @@
       "_scaled_dot_product_efficient_attention": 1,
       "_scaled_dot_product_cudnn_attention": 2
     }
-  }
+  },
+  "optimizer_bandwidth_efficiency": 0.113
 }

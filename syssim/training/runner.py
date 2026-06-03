@@ -23,6 +23,26 @@ def dp_group_ranks(tp_size: int, dp_size: int) -> list[int]:
     return [r * tp_size for r in range(dp_size)]
 
 
+def _optimizer_bw_efficiency(calibrated_model) -> float:
+    """Realized fraction of peak HBM bandwidth for the bandwidth-bound optimizer-update phase.
+
+    Read from the calibration manifest (``<calibrated_model>/manifest.json``) — a measured device
+    property that lives with the calibration artifacts, NOT a hand-authored hardware-YAML knob.
+    Returns 1.0 (spec peak, the prior behavior) when there is no calibrated model, the manifest is
+    missing/unreadable, or the key is absent — so every existing config is unchanged.
+    """
+    if not calibrated_model:
+        return 1.0
+    import os
+    import json
+    try:
+        with open(os.path.join(calibrated_model, "manifest.json")) as f:
+            eff = float(json.load(f).get("optimizer_bandwidth_efficiency", 1.0))
+        return eff if 0 < eff <= 1 else 1.0
+    except Exception:
+        return 1.0
+
+
 def _simulate_on_hardware(trace, hardware):
     """Inject + DES + build report. Used by Trace.simulate_on AND by simulate()."""
     from .runtime import simulate_runtime, phase_breakdown_ms, collective_exposed_ms
@@ -97,6 +117,10 @@ def _simulate_on_hardware(trace, hardware):
     if use_dist_opt:
         adam_bytes //= dp
 
+    # Realized HBM-bandwidth fraction for the optimizer-update phase, read from the calibration
+    # manifest (a measured device property — keeps it out of the human-authored hardware YAML).
+    opt_bw_eff = _optimizer_bw_efficiency(hardware.calibrated_model)
+
     if pp == 1:
         if graph.operators:
             last_backward = next(reversed(graph.operators))
@@ -111,6 +135,7 @@ def _simulate_on_hardware(trace, hardware):
                 graph, bytes_moved=adam_bytes,
                 peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
                 last_op_name=next(reversed(graph.operators)),
+                bandwidth_efficiency=opt_bw_eff,
             )
     else:
         # PP > 1: inject DP allreduce + optimizer per PP stage
@@ -130,6 +155,7 @@ def _simulate_on_hardware(trace, hardware):
                     graph, bytes_moved=adam_bytes,
                     peak_memory_bandwidth_GBps=hardware.peak_memory_bandwidth_GBps,
                     last_op_name=anchor,
+                    bandwidth_efficiency=opt_bw_eff,
                 )
 
     res = simulate_runtime(graph)
