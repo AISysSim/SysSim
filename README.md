@@ -9,6 +9,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="https://aisyssim.github.io/"><img src="https://img.shields.io/badge/docs-aisyssim.github.io-5b4ee5.svg" alt="Documentation"></a>
+  <a href="https://colab.research.google.com/drive/11VjhboE3IZE1ibSsihXD43JbVHji7XXR?usp=sharing"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in colab"></a>
 </p>
 
 **SysSim** estimates the step time and peak memory of LLM training — on hardware you don't have — without running real computation. It models tensor, sequence, data, and pipeline parallelism and reports step time, MFU, and per-GPU memory (including per-pipeline-stage peaks and OOM).
