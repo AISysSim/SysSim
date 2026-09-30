@@ -14,7 +14,7 @@ python -m syssim --help
 Set `SYSSIM_HARDWARE` to the absolute path of your target hardware YAML:
 
 ```bash
-export SYSSIM_HARDWARE="$PWD/examples/configs/hardware/isambard_gh200_4node.yaml"  # 16 GPUs; or your own hardware YAML
+export SYSSIM_HARDWARE="/path/to/hardware.yaml"
 ```
 
 The hardware file must specify compute peaks, memory bandwidth, `gpus_per_node`, `gpu_memory_GB`, and a `topology` block with intra-node and inter-node connectivity, bandwidth, and latency. Provide enough topology endpoints for the largest configuration below: 16 simulated GPUs. If using a calibrated estimator, supply calibration files for the target hardware; otherwise omit `calibrated_model` to use the default analytical estimator.
@@ -38,7 +38,7 @@ The command prints the evaluated configuration with the highest predicted model 
 The current selector maximizes the supplied metric and does not filter out-of-memory configurations. Use `--metric mfu`; do not use `--metric step_time_ms` to find the shortest step time. Check the selected configuration with `run`, supplying its TP value:
 
 ```bash
-export SYSSIM_SELECTED_TP=1  # Replace with the TP value printed by sweep.
+export SYSSIM_SELECTED_TP=4  # Replace with the TP value printed by sweep.
 python -m syssim run examples/configs/models/qwen3-1_7b.yaml \
   --hardware "$SYSSIM_HARDWARE" \
   --tp "$SYSSIM_SELECTED_TP" --dp 1 \
