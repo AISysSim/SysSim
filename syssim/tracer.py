@@ -130,6 +130,12 @@ def _convert_model_to_fake(
         if changed:
             restore_log.append((mod, "_buffers", orig_bufs, False))
             mod._buffers = new_bufs  # type: ignore[assignment]
+
+        # --- plain tensor attributes left on meta (e.g. rotary inv_freq) ---
+        for k, v in list(vars(mod).items()):
+            if isinstance(v, torch.Tensor) and v.device.type == "meta":
+                restore_log.append((mod, k, v, False))
+                mod.__dict__[k] = _to_fake_device(v, fake_mode, device)
     return restore_log
 
 
