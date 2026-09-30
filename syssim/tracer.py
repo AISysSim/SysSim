@@ -864,11 +864,16 @@ class OperatorGraphTracer:
         orig_get_rng_state = cuda_random.get_rng_state
         orig_set_rng_state = cuda_random.set_rng_state
         orig_megatron_set_rng = megatron_random._set_cuda_rng_state
+        # Newer Megatron reads the generator through its own helper, which would otherwise capture
+        # real CUDA generator state made under FakeTensor and corrupt the next trace in-process.
+        orig_megatron_get_rng = getattr(megatron_random, "_get_cuda_rng_state", None)
         fake_get_rng_state = lambda *args, **kwargs: torch.zeros(16, dtype=torch.uint8)
         fake_set_rng_state = lambda *args, **kwargs: None
         cuda_random.get_rng_state = torch.cuda.get_rng_state = fake_get_rng_state
         cuda_random.set_rng_state = torch.cuda.set_rng_state = fake_set_rng_state
         megatron_random._set_cuda_rng_state = fake_set_rng_state
+        if orig_megatron_get_rng is not None:
+            megatron_random._get_cuda_rng_state = fake_get_rng_state
 
         cuda_tracker.install_hooks()
         try:
@@ -902,6 +907,8 @@ class OperatorGraphTracer:
             cuda_random.get_rng_state = torch.cuda.get_rng_state = orig_get_rng_state
             cuda_random.set_rng_state = torch.cuda.set_rng_state = orig_set_rng_state
             megatron_random._set_cuda_rng_state = orig_megatron_set_rng
+            if orig_megatron_get_rng is not None:
+                megatron_random._get_cuda_rng_state = orig_megatron_get_rng
 
         return graph
 
@@ -949,11 +956,16 @@ class OperatorGraphTracer:
         orig_get_rng_state = cuda_random.get_rng_state
         orig_set_rng_state = cuda_random.set_rng_state
         orig_megatron_set_rng = megatron_random._set_cuda_rng_state
+        # Newer Megatron reads the generator through its own helper, which would otherwise capture
+        # real CUDA generator state made under FakeTensor and corrupt the next trace in-process.
+        orig_megatron_get_rng = getattr(megatron_random, "_get_cuda_rng_state", None)
         fake_get_rng_state = lambda *args, **kwargs: torch.zeros(16, dtype=torch.uint8)
         fake_set_rng_state = lambda *args, **kwargs: None
         cuda_random.get_rng_state = torch.cuda.get_rng_state = fake_get_rng_state
         cuda_random.set_rng_state = torch.cuda.set_rng_state = fake_set_rng_state
         megatron_random._set_cuda_rng_state = fake_set_rng_state  # raw CUDA call in fork/recompute
+        if orig_megatron_get_rng is not None:
+            megatron_random._get_cuda_rng_state = fake_get_rng_state
         try:
             with _dist_noop_context(graph=graph, last_op_on_stream=last_op_on_stream), \
                  fake_mode, mem_tracker:
@@ -990,4 +1002,6 @@ class OperatorGraphTracer:
             cuda_random.get_rng_state = torch.cuda.get_rng_state = orig_get_rng_state
             cuda_random.set_rng_state = torch.cuda.set_rng_state = orig_set_rng_state
             megatron_random._set_cuda_rng_state = orig_megatron_set_rng
+            if orig_megatron_get_rng is not None:
+                megatron_random._get_cuda_rng_state = orig_megatron_get_rng
         return self.memory_estimate

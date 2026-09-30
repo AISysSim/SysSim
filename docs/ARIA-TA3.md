@@ -17,7 +17,7 @@ Set `SYSSIM_HARDWARE` to the absolute path of your target hardware YAML:
 export SYSSIM_HARDWARE="$PWD/examples/configs/hardware/isambard_gh200_4node.yaml"  # 16 GPUs; or your own hardware YAML
 ```
 
-The hardware file must specify compute peaks, memory bandwidth, `gpus_per_node`, `gpu_memory_GB`, and a `topology` block with intra-node and inter-node connectivity, bandwidth, and latency. Provide enough topology endpoints for the largest configuration below: 16 simulated GPUs. If using a calibrated estimator, supply calibration files for the target hardware; otherwise omit `calibrated_model` to use the default analytical estimator.
+The hardware file must specify compute peaks, memory bandwidth, `gpus_per_node`, `gpu_memory_GB`, and a `topology` block with intra-node and inter-node connectivity, bandwidth, and latency. Provide enough topology endpoints for the largest configuration below: 16 simulated GPUs. The bundled `isambard_gh200_*.yaml` files set `calibrated_model: data/gh200`, which needs `lightgbm` installed (without it every operator time silently falls back to zero). To use the default analytical estimator instead, omit `calibrated_model`.
 
 Tracing requires a real CUDA device, but the execution host does not need to contain the entire simulated cluster. Model and hardware YAML files describe architecture and hardware; parallelization and training settings are CLI arguments.
 
