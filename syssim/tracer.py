@@ -131,11 +131,13 @@ def _convert_model_to_fake(
             restore_log.append((mod, "_buffers", orig_bufs, False))
             mod._buffers = new_bufs  # type: ignore[assignment]
 
-        # --- plain tensor attributes left on meta (e.g. rotary inv_freq) ---
-        for k, v in list(vars(mod).items()):
-            if isinstance(v, torch.Tensor) and v.device.type == "meta":
-                restore_log.append((mod, k, v, False))
-                mod.__dict__[k] = _to_fake_device(v, fake_mode, device)
+        # --- compat: newer Megatron keeps some tensors (e.g. rotary freqs) as plain attributes,
+        # not buffers, so they stay on meta and clash with fake CUDA activations. Older Megatron
+        # has none, so this loop is then a no-op.
+        for name, value in list(vars(mod).items()):
+            if isinstance(value, torch.Tensor) and value.device.type == "meta":
+                restore_log.append((mod, name, value, False))
+                mod.__dict__[name] = _to_fake_device(value, fake_mode, device)
     return restore_log
 
 
