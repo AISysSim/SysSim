@@ -174,7 +174,35 @@ def _install_te() -> None:
         mod._syssim_meta_installed = True
 
 
+def _install_te_multi_tensor() -> None:
+    """TE's fused optimizer kernels (grad-norm l2norm, Adam) launch on the raw data pointers of the
+    fake params, which is an illegal memory access that poisons the CUDA context for the rest of the
+    process. Skip the launch for fake inputs; l2norm still returns a (norm, per_tensor) pair."""
+    try:
+        from transformer_engine.pytorch.optimizers import multi_tensor_apply as mta
+    except ImportError:
+        return
+    cls = getattr(mta, "MultiTensorApply", None)
+    if cls is None or getattr(cls, "_syssim_meta_installed", False):
+        return
+    orig = cls.__call__
+
+    def call(self, op, noop_flag_buffer, tensor_lists, *args):
+        tensors = [t for group in tensor_lists for t in group]
+        if not any(_is_fake(t) for t in tensors):
+            return orig(self, op, noop_flag_buffer, tensor_lists, *args)
+        if "l2norm" in getattr(op, "__name__", ""):
+            zero = tensors[0].new_zeros(1, dtype=torch.float32)
+            return zero, zero.clone()
+        return None
+
+    cls.__call__ = call
+    cls._syssim_meta_installed = True
+
+
 def install_norm_meta_kernels() -> None:
-    """Idempotently make apex + TE fused norm kernels fake/meta-safe for tracing. No-op if absent."""
+    """Idempotently make apex + TE fused norm and optimizer kernels fake/meta-safe for tracing.
+    No-op if absent."""
     _install_apex()
     _install_te()
+    _install_te_multi_tensor()
